@@ -50,7 +50,10 @@ function NowCard({ s }: { s: SongsState }) {
       <h2>
         지금 재생 중
         <span className="spacer" />
-        {s.fallbackUntil && <span className="badge wait">로컬 비상 스테이션 사용 중</span>}
+        {s.fallbackUntil && <>
+          <span className="badge wait">YouTube 장애 → 로컬 음악 재생 중</span>
+          <button className="sm" onClick={() => post('/api/songs/retry-youtube')}>YouTube 다시 시도</button>
+        </>}
         <span className={`badge ${s.playerOnline ? 'ok' : 'bad'}`}>{s.playerOnline ? '플레이어 연결됨' : '플레이어 없음'}</span>
       </h2>
       {!s.playerOnline && (
@@ -58,6 +61,11 @@ function NowCard({ s }: { s: SongsState }) {
           소리를 낼 플레이어가 없습니다. <b>OBS에 플레이어 소스를 추가</b>하거나(📺 OBS 설정 탭),
           {' '}<a href={`/o/player?key=${key}`} target="_blank" rel="noreferrer">이 브라우저에서 재생 ↗</a> 을 여세요.
           <div className="small muted">플레이어가 없는 동안 대기열은 그대로 유지됩니다.</div>
+        </div>
+      )}
+      {s.playerBlocked && (
+        <div className="alert" style={{ marginBottom: 12 }}>
+          브라우저가 자동재생을 막았습니다. <a href={`/o/player?key=${key}`} target="_blank" rel="noreferrer">플레이어 탭</a>에서 <b>"클릭해서 소리 켜기"</b>를 눌러 주세요. (OBS에서는 생기지 않습니다)
         </div>
       )}
       {np ? (

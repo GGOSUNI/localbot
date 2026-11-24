@@ -92,6 +92,8 @@ export interface SongsState {
   volume: number;
   /** 플레이어(OBS 소스 등)가 연결되어 있는지 */
   playerOnline: boolean;
+  /** 브라우저 자동재생 차단 → 플레이어 탭에서 클릭 필요 */
+  playerBlocked: boolean;
   /** YouTube 연속 실패로 로컬 비상 스테이션 사용 중 */
   fallbackUntil: number | null;
   queue: QueueItem[];

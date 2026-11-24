@@ -87,6 +87,7 @@ export class SongService {
       paused: this.engine.paused,
       volume: this.engine.volume,
       playerOnline: this.engine.playerOnline,
+      playerBlocked: this.engine.playerBlocked,
       fallbackUntil: this.engine.fallbackUntil,
       queue: this.store.queued(),
       pending: this.store.pending(),

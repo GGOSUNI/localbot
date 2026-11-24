@@ -196,12 +196,34 @@ function sendEnded() {
 }
 
 // ── 자동재생 차단 (일반 브라우저 탭에서만 생김. OBS는 허용) ──
+// 페이지가 열릴 때 무음 소리를 실제로 재생해 보고 판단합니다.
+let autoplay: 'unknown' | 'allowed' | 'blocked' = 'unknown';
+void (async () => {
+  const silent = new Audio(silentWav());
+  try {
+    await silent.play();
+    autoplay = 'allowed';
+  } catch (e) {
+    autoplay = (e as DOMException)?.name === 'NotAllowedError' ? 'blocked' : 'allowed';
+  }
+})();
+function silentWav(): string {
+  const n = 800;
+  const b = new DataView(new ArrayBuffer(44 + n));
+  const w = (o: number, str: string) => [...str].forEach((c, i) => b.setUint8(o + i, c.charCodeAt(0)));
+  w(0, 'RIFF'); b.setUint32(4, 36 + n, true); w(8, 'WAVEfmt '); b.setUint32(16, 16, true); b.setUint16(20, 1, true);
+  b.setUint16(22, 1, true); b.setUint32(24, 8000, true); b.setUint32(28, 8000, true); b.setUint16(32, 1, true);
+  b.setUint16(34, 8, true); w(36, 'data'); b.setUint32(40, n, true);
+  for (let i = 0; i < n; i++) b.setUint8(44 + i, 128);
+  return URL.createObjectURL(new Blob([b.buffer], { type: 'audio/wav' }));
+}
 function onBlocked() {
   blocked = true;
   $('unlock').classList.add('show');
 }
 function clearBlocked() {
   blocked = false;
+  if (navigator.userActivation?.hasBeenActive) autoplay = 'allowed';
   $('unlock').classList.remove('show');
 }
 $('unlock').addEventListener('click', () => {
@@ -225,8 +247,8 @@ setInterval(() => {
     time = ytMain.getCurrentTime() || 0;
     duration = ytMain.getDuration() || null;
     state = s === YT_STATE.PLAYING ? 'playing' : s === YT_STATE.PAUSED ? 'paused' : s === YT_STATE.BUFFERING ? 'buffering' : 'loading';
-    // 사용자 조작 전에는 소리 있는 자동재생이 막힐 수 있음
-    if (!paused && s !== YT_STATE.PLAYING && Date.now() - loadStartedAt > 4000 && !(navigator as any).userActivation?.hasBeenActive && !inOBS) onBlocked();
+    // 자동재생이 실제로 막힌 브라우저에서만 '클릭 필요'로 판단 (추측하지 않음 — 추측이 틀리면 워치독이 멈춤)
+    if (autoplay === 'blocked' && !paused && s !== YT_STATE.PLAYING && Date.now() - loadStartedAt > 3000) onBlocked();
   } else {
     state = 'loading';
   }

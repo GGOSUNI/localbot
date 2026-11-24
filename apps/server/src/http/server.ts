@@ -133,6 +133,7 @@ export function startHttp(deps: Deps): HttpHandle {
     { method: 'POST', re: /^\/api\/songs\/pause$/, fn: () => (S.engine.pause(), ok) },
     { method: 'POST', re: /^\/api\/songs\/resume$/, fn: () => (S.engine.resume(), ok) },
     { method: 'POST', re: /^\/api\/songs\/volume$/, fn: (_, b) => (S.engine.setVolume(Number(b.volume)), ok) },
+    { method: 'POST', re: /^\/api\/songs\/retry-youtube$/, fn: () => (S.engine.endFallback(), ok) },
     { method: 'POST', re: /^\/api\/songs\/undo$/, fn: () => ({ ok: true, undone: S.undo() }) },
     { method: 'POST', re: /^\/api\/songs\/clear$/, fn: () => (S.clearQueue(), ok) },
     { method: 'POST', re: /^\/api\/songs\/policy$/, fn: (_, b) => S.setPolicy(b) },

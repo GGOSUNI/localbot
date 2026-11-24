@@ -10,14 +10,16 @@ const log = createLogger('player');
 
 export const WATCHDOG = {
   /** 곡 시작 후 첫 진행까지 기다리는 시간 (광고·로딩) */
-  firstProgressGraceMs: 45_000,
+  firstProgressGraceMs: 30_000,
+  /** 멈춰서 다시 불러온 뒤 기다리는 시간 (무음이 길어지지 않게 짧게) */
+  reloadGraceMs: 15_000,
   /** 재생 중 위치가 이만큼 안 움직이면 멈춘 것 */
   stallMs: 8_000,
   /** 멈춤 시 같은 위치에서 다시 불러오는 횟수 */
   maxReloads: 1,
   /** YouTube 연속 실패 몇 번이면 로컬 비상 스테이션으로 */
-  ytFailsForFallback: 3,
-  fallbackMs: 5 * 60_000,
+  ytFailsForFallback: 2,
+  fallbackMs: 3 * 60_000,
   persistEveryMs: 2_000,
 };
 
@@ -71,6 +73,10 @@ export class PlayerEngine {
 
   get master(): PlayerConn | null {
     return this.players[0] ?? null;
+  }
+  /** 브라우저 자동재생 차단으로 플레이어 클릭을 기다리는 중 */
+  get playerBlocked(): boolean {
+    return this.blocked && !!this.np;
   }
   get playerOnline(): boolean {
     return this.players.length > 0;
@@ -128,7 +134,9 @@ export class PlayerEngine {
     if (!this.np || r.seq !== this.seq) return; // 이전 곡에 대한 늦은 보고
 
     if (r.type === 'player.hb') {
+      const wasBlocked = this.blocked;
       this.blocked = r.state === 'blocked';
+      if (wasBlocked !== this.blocked) this.host.changed();
       if (r.state === 'playing' && r.time > this.lastTime + 0.25) {
         this.lastProgressAt = t;
         if (this.np.track.source === 'youtube') this.ytFails = 0;
@@ -158,7 +166,7 @@ export class PlayerEngine {
     const t = this.host.now();
     const stalled =
       this.lastProgressAt === null
-        ? t - this.playSentAt > WATCHDOG.firstProgressGraceMs
+        ? t - this.playSentAt > (this.reloads > 0 ? WATCHDOG.reloadGraceMs : WATCHDOG.firstProgressGraceMs)
         : t - this.lastProgressAt > WATCHDOG.stallMs;
     if (!stalled) return;
 
@@ -172,7 +180,18 @@ export class PlayerEngine {
       this.sendPlay(this.lastTime, true);
       return;
     }
-    this.fail('재생이 멈춤');
+    // 다시 불러와도 아예 시작조차 못 했다면 영상 하나의 문제가 아니라 YouTube 자체가 안 되는 것 → 바로 비상 전환
+    const neverStarted = this.lastProgressAt === null && np.position < 1;
+    this.fail(neverStarted ? '재생이 시작되지 않음' : '재생이 멈춤', undefined, neverStarted);
+  }
+
+  /** 로컬 비상 스테이션을 끝내고 YouTube를 다시 시도 (대시보드 버튼) */
+  endFallback() {
+    if (this.fallbackUntil === null) return;
+    this.fallbackUntil = null;
+    this.ytFails = 0;
+    if (this.np?.kind === 'station' && this.np.track.source === 'local') this.finish('interrupted', null);
+    else this.host.changed();
   }
 
   // ── 조작 ──
@@ -278,14 +297,14 @@ export class PlayerEngine {
     m.send({ type: 'player.cmd', cmd });
   }
 
-  private fail(reason: string, code?: number | string) {
+  private fail(reason: string, code?: number | string, severe = false) {
     const np = this.np;
     if (!np) return;
     if (np.track.source === 'youtube') {
-      this.ytFails++;
+      this.ytFails += severe ? WATCHDOG.ytFailsForFallback : 1;
       if (this.ytFails >= WATCHDOG.ytFailsForFallback && this.fallbackUntil === null) {
         this.fallbackUntil = this.host.now() + WATCHDOG.fallbackMs;
-        this.host.notify('warn', 'YouTube 재생이 연속으로 실패해서 5분간 로컬 비상 스테이션으로 전환합니다. 신청곡은 대기열에 그대로 남아 있습니다.');
+        this.host.notify('warn', 'YouTube 재생이 안 돼서 3분간 로컬 비상 스테이션으로 전환합니다. 신청곡은 대기열에 그대로 남아 있습니다.');
       }
     }
     this.finish('failed', reason, code);

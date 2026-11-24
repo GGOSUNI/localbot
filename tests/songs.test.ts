@@ -239,16 +239,37 @@ describe('재생 엔진 — 장애 대응 (카오스)', () => {
     expect(p.lastPlay()!.position).toBe(31); // 같은 곡 같은 위치
     expect(p.lastPlay()!.track.ref).toBe(V(1));
 
-    advance(WATCHDOG.firstProgressGraceMs + 1000); // 다시 불러와도 진행이 없음
+    advance(WATCHDOG.reloadGraceMs + 1000); // 다시 불러와도 진행이 없음
     expect(svc.engine.np?.track.ref).toBe(V(2));
     expect(svc.store.history()[0]).toMatchObject({ status: 'failed', reason: '재생이 멈춤' });
+    expect(svc.engine.fallbackUntil).toBeNull(); // 중간에 멈춘 건 영상 문제일 수 있음 → 비상 전환 안 함
+  });
+
+  test('#2d YouTube 자체가 안 됨(시작조차 안 됨) → 곡 하나 만에 로컬 비상 전환, 버튼으로 복귀', async () => {
+    const { svc, dir, advance } = setup();
+    const music = join(dir, 'm');
+    mkdirSync(music);
+    writeFileSync(join(music, 'a.mp3'), 'x');
+    await svc.createStation({ name: '비상', kind: 'local', folder: music });
+    svc.activateStation(null);
+    const p = player(svc);
+    await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
+    await svc.request({ videoId: V(2), viewer: viewer('b'), via: 'chat' });
+    advance(WATCHDOG.firstProgressGraceMs + 1000); // 시작 안 됨 → 재로드
+    advance(WATCHDOG.reloadGraceMs + 1000); // 또 안 됨
+    // 무음은 최대 (30 + 15)초
+    expect(svc.engine.np?.track.source).toBe('local');
+    expect(svc.store.queued().map((q) => q.track.ref)).toEqual([V(2)]);
+    svc.engine.endFallback();
+    expect(svc.engine.np?.track.ref).toBe(V(2));
+    expect(p.lastPlay()!.track.ref).toBe(V(2));
   });
 
   test('#2b 광고·로딩 중에는 유예 시간 동안 기다린다', async () => {
     const { svc, advance } = setup();
     const p = player(svc);
     await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
-    advance(30_000); // 첫 진행 전 30초 → 아직 괜찮음
+    advance(WATCHDOG.firstProgressGraceMs - 5000); // 첫 진행 전 → 아직 괜찮음
     expect(p.plays()).toBe(1);
     p.hb(0.5);
     p.hb(1.5);
@@ -322,18 +343,17 @@ describe('재생 엔진 — 장애 대응 (카오스)', () => {
     for (const n of [1, 2, 3, 4, 5]) await svc.request({ videoId: V(n), viewer: viewer(`v${n}`), via: 'chat' });
     p.error('youtube-unreachable');
     p.error('youtube-unreachable');
-    p.error('youtube-unreachable');
     expect(svc.engine.fallbackUntil).not.toBeNull();
     expect(notes.join()).toContain('로컬 비상 스테이션');
     expect(svc.engine.np?.track.source).toBe('local');
-    // 실패: 스테이션 곡(V90) → V1 → V2. 남은 신청곡은 보존
-    expect(svc.store.queued().map((q) => q.track.ref)).toEqual([V(3), V(4), V(5)]);
+    // 실패: 스테이션 곡(V90) → V1. 남은 신청곡은 보존
+    expect(svc.store.queued().map((q) => q.track.ref)).toEqual([V(2), V(3), V(4), V(5)]);
 
     clock.t += WATCHDOG.fallbackMs + 1;
     p.hb(1);
     p.ended();
     expect(svc.engine.fallbackUntil).toBeNull();
-    expect(svc.engine.np?.track.ref).toBe(V(3));
+    expect(svc.engine.np?.track.ref).toBe(V(2));
   });
 
   test('#7 플레이어가 없으면 대기열은 멈춘 채 보존 (곡이 그냥 넘어가지 않음)', async () => {
