@@ -3,14 +3,24 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ESNext", "DOM"],
-    "types": ["bun"],
+    "lib": [
+      "ESNext",
+      "DOM"
+    ],
+    "types": [
+      "bun"
+    ],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "noEmit": true,
     "allowImportingTsExtensions": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "jsx": "react-jsx"
   },
-  "include": ["apps/*/src/**/*", "packages/*/src/**/*", "tests/**/*"]
+  "include": [
+    "apps/*/src/**/*",
+    "packages/*/src/**/*",
+    "tests/**/*"
+  ]
 }

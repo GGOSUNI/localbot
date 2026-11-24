@@ -42,7 +42,7 @@ beforeAll(async () => {
   });
   await waitHealthy(10_000);
   const key = readFileSync(join(home, 'data', 'dashboard.key'), 'utf8').trim();
-  const r = await fetch(`${BASE}/?key=${key}`, { redirect: 'manual' });
+  const r = await fetch(`${BASE}/login?key=${key}`, { redirect: 'manual' });
   expect(r.status).toBe(302);
   cookie = r.headers.get('set-cookie')!.split(';')[0]!;
 });
@@ -59,7 +59,10 @@ const authed = (path: string, init: RequestInit = {}) =>
 describe('보안', () => {
   test('세션 없이 API 접근 불가', async () => {
     expect((await fetch(`${BASE}/api/events`)).status).toBe(401);
-    expect((await fetch(`${BASE}/`)).status).toBe(401);
+    expect((await fetch(`${BASE}/api/songs`)).status).toBe(401);
+    expect(((await (await fetch(`${BASE}/api/session`)).json()) as any).authed).toBe(false);
+    // 잘못된 키로 로그인 시도 → 쿠키 없음
+    expect((await fetch(`${BASE}/login?key=wrong`, { redirect: 'manual' })).headers.get('set-cookie')).toBeNull();
   });
   test('잘못된 Host 헤더 거부 (DNS rebinding)', async () => {
     const r = await fetch(`${BASE}/api/health`, { headers: { host: 'evil.example:80' } });

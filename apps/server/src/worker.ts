@@ -1,13 +1,18 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import type { Envelope } from '@localbot/shared';
 import { MockAdapter } from './adapters/mock.ts';
 import { EventBus, envelope } from './core/bus.ts';
 import { config } from './core/config.ts';
 import { ChzzkConnection } from './core/connection.ts';
-import { openDatabase } from './core/db.ts';
+import { backup, getSetting, openDatabase, setSetting } from './core/db.ts';
 import { Ingest } from './core/ingest.ts';
 import { createLogger } from './core/logger.ts';
 import { backupDir, dashboardKeyPath, dataDir, dbPath } from './core/paths.ts';
 import { type HttpHandle, startHttp } from './http/server.ts';
+import { CommandRouter } from './modules/commands.ts';
+import { RouletteService } from './modules/roulette/service.ts';
+import { registerSongCommands } from './modules/songs/commands.ts';
+import { SongService } from './modules/songs/service.ts';
 import { ensureDashboardKey } from './supervisor.ts';
 
 const log = createLogger('worker');
@@ -31,29 +36,61 @@ export async function runWorker(): Promise<void> {
   process.on('disconnect', () => process.exit(EXIT.OK));
 
   mkdirSync(dataDir, { recursive: true });
-  const dashboardKey = existsSync(dashboardKeyPath)
-    ? readFileSync(dashboardKeyPath, 'utf8').trim()
-    : ensureDashboardKey();
+  const dashboardKey = existsSync(dashboardKeyPath) ? readFileSync(dashboardKeyPath, 'utf8').trim() : ensureDashboardKey();
 
   const db = openDatabase(dbPath, backupDir);
   const bus = new EventBus();
   const ingest = new Ingest(db, bus, config.donationDedupWindowMs);
+  let http: HttpHandle | null = null;
+
+  // 오버레이(OBS) 키: 대시보드 키와 분리. 방송 화면에 URL이 노출돼도 재발급하면 끝
+  const newKey = () => Buffer.from(crypto.getRandomValues(new Uint8Array(12))).toString('base64url');
+  if (!getSetting<string | null>(db, 'overlay.key', null)) setSetting(db, 'overlay.key', newKey());
+  let overlayKey = getSetting<string>(db, 'overlay.key', '');
 
   const mock = new MockAdapter();
   await mock.start((env) => ingest.push(env));
-
-  let http: HttpHandle | null = null;
   const connection = new ChzzkConnection(db, ingest, (s) => http?.broadcastConnection(s));
+
+  // 봇 응답: 보낼 수 있는 연결이면 채팅으로, 아니면 대시보드에만 표시
+  const reply = (text: string, origin?: Envelope) => {
+    let delivered = false;
+    if (origin?.source === 'mock') {
+      void mock.sendChat(text);
+      delivered = true;
+    }
+    ingest.push(envelope('system', { type: 'bot', text, delivered }));
+  };
+  const notify = (level: 'info' | 'warn', message: string) => ingest.push(envelope('system', { type: 'system', level, message }));
+
+  const songs = new SongService({ db, notify, reply: (t) => reply(t), onChange: () => http?.broadcastSongs() });
+  const roulette = new RouletteService({ db, reply: (t) => reply(t), onChange: () => http?.broadcastRoulette() });
+
+  const commands = new CommandRouter(reply);
+  registerSongCommands(commands, songs);
+
+  bus.on(async (env) => {
+    const e = env.event;
+    if (e.type === 'chat') await commands.handle(env);
+    if (e.type === 'donation') {
+      roulette.onDonation(e.viewer, e.amountKRW);
+      await songs.onDonation(e.viewer, e.amountKRW, e.text);
+    }
+    if (e.type === 'stream' && e.state === 'online') backup(db, backupDir, 'stream-start');
+  });
 
   try {
     http = startHttp({
       host: config.host,
       port: config.port,
       dashboardKey,
-      bus,
-      ingest,
-      mock,
-      connection,
+      overlayKey: () => overlayKey,
+      regenerateOverlayKey: () => {
+        overlayKey = newKey();
+        setSetting(db, 'overlay.key', overlayKey);
+        return overlayKey;
+      },
+      bus, ingest, mock, connection, songs, roulette,
       workerStartedAt: startedAt,
       onCrashRequested: () => {
         log.warn('crash requested from dashboard');
@@ -70,12 +107,13 @@ export async function runWorker(): Promise<void> {
     process.exit(EXIT.PORT_IN_USE);
   }
 
-  ingest.push(envelope('system', { type: 'system', level: 'info', message: `워커 시작 (pid ${process.pid})` }));
-
+  songs.start();
+  ingest.push(envelope('system', { type: 'system', level: 'info', message: `LocalBot 시작 (pid ${process.pid})` }));
   await connection.restore(); // 지난번 채널로 자동 연결
 
   function shutdown() {
     log.info('shutting down');
+    songs.stop();
     http?.stop();
     db.close();
     process.exit(EXIT.OK);

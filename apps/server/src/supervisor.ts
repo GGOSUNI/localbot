@@ -99,7 +99,7 @@ export function ensureDashboardKey(): string {
 }
 
 function dashboardUrl(key: string) {
-  return `http://127.0.0.1:${config.port}/?key=${key}`;
+  return `http://127.0.0.1:${config.port}/login?key=${key}`;
 }
 
 function lockHolder(): number | null {

@@ -23,7 +23,9 @@ export type BotEvent =
     }
   | { type: 'subscription'; viewer: Viewer; months: number; tier?: string }
   | { type: 'stream'; state: 'online' | 'offline' }
-  | { type: 'system'; level: 'info' | 'warn' | 'error'; message: string };
+  | { type: 'system'; level: 'info' | 'warn' | 'error'; message: string }
+  /** 봇의 응답. delivered=false면 채팅 전송이 불가능한 연결(읽기 전용)이라 대시보드에만 표시 */
+  | { type: 'bot'; text: string; delivered: boolean };
 
 export type EventSource = 'chzzk-official' | 'chzzk-readonly' | 'mock' | 'system';
 
