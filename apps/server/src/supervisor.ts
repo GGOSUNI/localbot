@@ -36,9 +36,14 @@ export async function runSupervisor(): Promise<void> {
   const spawnWorker = () => {
     const startedAt = Date.now();
     child = Bun.spawn([process.execPath, ...workerArgs()], {
-      stdio: ['ignore', 'inherit', 'inherit'],
+      // 콘솔 없는 exe에서는 상속할 콘솔이 없음 → 로그는 data/logs 파일로만
+      stdio: isCompiled && process.platform === 'win32' ? ['ignore', 'ignore', 'ignore'] : ['ignore', 'inherit', 'inherit'],
       env: process.env,
       ipc(message: { type?: string; pid?: number }) {
+        if (message?.type === 'quit') {
+          void stop();
+          return;
+        }
         if (message?.type === 'ready') {
           log.info(`worker ready (pid ${message.pid})`);
           if (!browserOpened && config.openBrowser) openDashboard(key);

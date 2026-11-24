@@ -52,7 +52,7 @@ describe('database', () => {
   test('settings 왕복', () => {
     expect(getSetting(db, 'x', 1)).toBe(1);
     setSetting(db, 'x', { a: [1, 2] });
-    expect(getSetting(db, 'x', null)).toEqual({ a: [1, 2] });
+    expect(getSetting<unknown>(db, 'x', null)).toEqual({ a: [1, 2] });
   });
 
   test('백업은 최대 7개만 유지', () => {
@@ -88,5 +88,15 @@ describe('Ingest — 후원 중복 제거', () => {
     ingest.push(envelope('mock', { type: 'chat', viewer: { ...viewer, nickname: '새닉' }, text: 'b', msgId: '2' }, 2));
     expect((db.query('SELECT nickname FROM viewers WHERE id = ?').get('chzzk:u1') as any).nickname).toBe('새닉');
     expect(ingest.recent(10).map((e) => (e.event as any).text)).toEqual(['a', 'b']);
+  });
+});
+
+describe('Ingest — 플랫폼 후원 ID', () => {
+  test('같은 donationId는 시간이 많이 지나도(재연결 후 재전송) 한 번만', () => {
+    const ingest = new Ingest(db, new EventBus(), 3000);
+    const d = (ts: number) =>
+      envelope('chzzk-readonly', { type: 'donation', viewer: null, amountKRW: 1000, kind: 'chat', externalId: 'D-123' }, ts);
+    expect(ingest.push(d(1_000))).toBe(true);
+    expect(ingest.push(d(1_000 + 3_600_000))).toBe(false);
   });
 });

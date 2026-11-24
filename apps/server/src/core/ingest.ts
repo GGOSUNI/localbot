@@ -45,8 +45,11 @@ export class Ingest {
 
     this.db.transaction(() => {
       if (e.type === 'donation') {
-        const key = donationKey(e.viewer?.id ?? null, e.viewer?.nickname ?? null, e.amountKRW, e.text);
-        const w = this.dedupWindowMs;
+        // 플랫폼 후원 ID가 있으면 그걸로 (시간 제한 없이) 판정, 없으면 내용+시간 창으로 판정
+        const key = e.externalId
+          ? `ext:${e.externalId}`
+          : donationKey(e.viewer?.id ?? null, e.viewer?.nickname ?? null, e.amountKRW, e.text);
+        const w = e.externalId ? Number.MAX_SAFE_INTEGER / 4 : this.dedupWindowMs;
         if (this.findDup.get(key, env.ts - w, env.ts + w)) {
           accepted = false;
           return;

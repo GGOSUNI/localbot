@@ -7,66 +7,118 @@
 <style>
   :root {
     --bg: #0f1115; --panel: #171a21; --line: #262a33; --text: #e7e9ee; --muted: #8b91a0;
-    --accent: #00d564; --warn: #ffb020; --err: #ff5470; --donation: #ffd84d;
+    --accent: #00d564; --warn: #ffb020; --err: #ff5470; --donation: #ffd84d; --sub: #a78bfa;
   }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.5 system-ui, "Malgun Gothic", sans-serif; background: var(--bg); color: var(--text); }
-  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
-  header h1 { font-size: 16px; margin: 0; }
-  .badge { padding: 2px 10px; border-radius: 999px; font-size: 12px; background: var(--line); color: var(--muted); }
-  .badge.ok { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
-  .badge.bad { background: color-mix(in srgb, var(--err) 20%, transparent); color: var(--err); }
-  main { display: grid; grid-template-columns: 320px 1fr; gap: 16px; padding: 16px 20px; }
-  @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
-  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  header { display: flex; align-items: center; gap: 10px; padding: 12px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0 6px 0 0; }
+  .spacer { flex: 1; }
+  .badge { padding: 2px 10px; border-radius: 999px; font-size: 12px; background: var(--line); color: var(--muted); white-space: nowrap; }
+  .badge.ok { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+  .badge.live { background: var(--err); color: #fff; font-weight: 700; }
+  .badge.wait { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+  .badge.bad { background: color-mix(in srgb, var(--err) 18%, transparent); color: var(--err); }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px 20px; display: grid; gap: 16px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
   h2 { font-size: 13px; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
-  form { display: grid; gap: 8px; margin-bottom: 16px; }
-  input, button { font: inherit; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); padding: 7px 10px; }
+  input, button { font: inherit; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); padding: 8px 12px; }
   button { cursor: pointer; background: var(--line); }
-  button.primary { background: var(--accent); color: #04140a; border-color: transparent; font-weight: 600; }
-  button.danger { color: var(--err); }
-  #feed { list-style: none; margin: 0; padding: 0; max-height: calc(100vh - 140px); overflow-y: auto; }
-  #feed li { display: flex; gap: 10px; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); color: #04140a; border-color: transparent; font-weight: 700; }
+  button.ghost { background: transparent; color: var(--muted); }
+
+  /* 첫 화면: 채널 연결 */
+  #setup { text-align: center; padding: 48px 20px; }
+  #setup h2 { font-size: 22px; color: var(--text); margin-bottom: 6px; }
+  #setup p { color: var(--muted); margin: 0 0 20px; }
+  #setup form { display: flex; gap: 8px; max-width: 620px; margin: 0 auto; }
+  #setup input { flex: 1; font-size: 15px; padding: 12px 14px; }
+  #setup button { font-size: 15px; padding: 12px 22px; }
+  #setup-error { color: var(--err); min-height: 1.5em; margin-top: 10px; }
+
+  /* 연결된 채널 */
+  #channel { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  #channel .name { font-size: 18px; font-weight: 700; }
+  #channel .title { color: var(--muted); flex-basis: 100%; }
+  #channel .note { color: var(--muted); font-size: 12px; flex-basis: 100%; }
+
+  #feed { list-style: none; margin: 0; padding: 0; height: 52vh; overflow-y: auto; }
+  #feed li { display: flex; gap: 10px; padding: 5px 4px; border-bottom: 1px solid var(--line); }
   #feed time { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+  #feed .empty { color: var(--muted); justify-content: center; padding: 40px 0; border: 0; }
   .t-donation { color: var(--donation); }
+  .t-sub { color: var(--sub); }
   .t-system { color: var(--muted); }
   .t-system.warn { color: var(--warn); } .t-system.error { color: var(--err); }
   .who { font-weight: 600; margin-right: 6px; }
-  .src { margin-left: auto; color: var(--muted); font-size: 12px; flex: none; }
+  .role { font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--line); margin-right: 6px; color: var(--muted); }
+  .src { margin-left: auto; color: var(--muted); font-size: 11px; flex: none; }
+
+  details summary { cursor: pointer; color: var(--muted); }
+  .tools { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .tools input { width: 140px; }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <header>
   <h1>LocalBot</h1>
-  <span id="conn" class="badge">연결 중…</span>
-  <span id="worker" class="badge"></span>
+  <span id="conn" class="badge">서버 연결 중…</span>
+  <span class="spacer"></span>
+  <button id="quit" class="ghost" title="LocalBot을 완전히 종료합니다">종료</button>
 </header>
+
 <main>
-  <section>
-    <h2>테스트 (Mock 어댑터)</h2>
-    <form id="f-donation">
-      <input name="nickname" placeholder="닉네임 (비우면 익명)" value="치즈러버">
-      <input name="amount" type="number" min="1" step="1" value="5000" required>
-      <input name="text" placeholder="후원 메시지" value="룰렛 돌려주세요!">
-      <button class="primary">가짜 후원 보내기</button>
+  <!-- ① 채널 미설정: 딸깍 화면 -->
+  <section id="setup" hidden>
+    <h2>치지직 채널 주소를 붙여넣으세요</h2>
+    <p>로그인이나 설정 없이 바로 채팅과 후원을 받기 시작합니다.</p>
+    <form id="f-connect">
+      <input name="input" placeholder="https://chzzk.naver.com/live/…" autocomplete="off" required autofocus>
+      <button class="primary" id="connect-btn">연결</button>
     </form>
-    <form id="f-chat">
-      <input name="nickname" value="시청자1">
-      <input name="text" value="!업타임">
-      <button>가짜 채팅 보내기</button>
-    </form>
-    <h2>자가 복구 확인</h2>
-    <button id="crash" class="danger">워커 강제 종료</button>
+    <div id="setup-error"></div>
   </section>
+
+  <!-- ② 연결된 채널 -->
+  <section id="channel-box" hidden>
+    <div id="channel">
+      <span class="name" id="ch-name"></span>
+      <span class="badge" id="ch-live"></span>
+      <span class="badge" id="ch-chat"></span>
+      <span class="spacer"></span>
+      <button class="ghost" id="change">채널 변경</button>
+      <span class="title" id="ch-title"></span>
+      <span class="note">읽기 전용 연결 — 채팅·후원·구독을 받습니다. (봇이 채팅에 답하는 기능은 공식 연결 설정 후 사용 가능)</span>
+    </div>
+  </section>
+
   <section>
-    <h2>실시간 이벤트</h2>
-    <ul id="feed"></ul>
+    <h2>실시간 채팅 · 후원</h2>
+    <ul id="feed"><li class="empty">아직 이벤트가 없습니다</li></ul>
+  </section>
+
+  <section>
+    <details>
+      <summary>테스트 도구 (방송 없이 확인)</summary>
+      <form id="f-donation" class="tools">
+        <input name="nickname" placeholder="닉네임 (비우면 익명)" value="테스트시청자">
+        <input name="amount" type="number" min="1" step="1" value="5000" required>
+        <input name="text" placeholder="메시지" value="테스트 후원!" style="flex:1;min-width:160px">
+        <button>가짜 후원</button>
+      </form>
+      <div class="tools">
+        <button id="crash">자가 복구 테스트 (내부 프로세스 강제 종료)</button>
+      </div>
+    </details>
   </section>
 </main>
+
 <script>
-  const feed = document.getElementById('feed');
-  const conn = document.getElementById('conn');
-  const workerBadge = document.getElementById('worker');
+  const $ = (id) => document.getElementById(id);
+  const feed = $('feed');
+  const ROLE = { streamer: '스트리머', manager: '매니저', subscriber: '구독' };
 
   function el(tag, cls, text) {
     const e = document.createElement(tag);
@@ -74,43 +126,77 @@
     if (text !== undefined) e.textContent = text; // 채팅은 항상 textContent (XSS 방지)
     return e;
   }
+  const won = (n) => `${n.toLocaleString('ko-KR')}원`;
 
   function render(env) {
+    feed.querySelector('.empty')?.remove();
     const ev = env.event;
     const li = el('li');
     li.append(el('time', '', new Date(env.ts).toLocaleTimeString('ko-KR', { hour12: false })));
     const body = el('span');
+    const who = (v) => {
+      const f = document.createDocumentFragment();
+      for (const r of v.roles) if (ROLE[r]) f.append(el('span', 'role', ROLE[r]));
+      f.append(el('span', 'who', v.nickname));
+      return f;
+    };
     if (ev.type === 'chat') {
-      body.append(el('span', 'who', ev.viewer.nickname), document.createTextNode(ev.text));
+      body.append(who(ev.viewer), document.createTextNode(ev.text));
     } else if (ev.type === 'donation') {
       body.className = 't-donation';
       body.append(el('span', 'who', `💰 ${ev.viewer ? ev.viewer.nickname : '익명'}`),
-        document.createTextNode(`${ev.amountKRW.toLocaleString('ko-KR')}원${ev.text ? ' — ' + ev.text : ''}`));
+        document.createTextNode(`${won(ev.amountKRW)}${ev.kind === 'video' ? ' (영상)' : ev.kind === 'mission' ? ' (미션)' : ''}${ev.text ? ' — ' + ev.text : ''}`));
+    } else if (ev.type === 'subscription') {
+      body.className = 't-sub';
+      body.append(el('span', 'who', `⭐ ${ev.viewer.nickname}`), document.createTextNode(`${ev.months}개월 구독${ev.tier ? ' (' + ev.tier + ')' : ''}`));
+    } else if (ev.type === 'stream') {
+      body.className = 't-system';
+      body.textContent = ev.state === 'online' ? '🔴 방송 시작' : '⚫ 방송 종료';
     } else if (ev.type === 'system') {
       body.className = `t-system ${ev.level}`;
       body.textContent = `⚙ ${ev.message}`;
-    } else {
-      body.textContent = `${ev.type} ${JSON.stringify(ev)}`;
     }
-    li.append(body, el('span', 'src', env.source));
+    li.append(body);
+    if (env.source === 'mock') li.append(el('span', 'src', '테스트'));
+    const atTop = feed.scrollTop < 40;
     feed.prepend(li);
-    while (feed.children.length > 300) feed.lastChild.remove();
+    while (feed.children.length > 500) feed.lastChild.remove();
+    if (!atTop) feed.scrollTop += li.offsetHeight; // 위로 스크롤해 읽는 중이면 화면 고정
   }
 
-  let retry = 0;
+  function setBadge(node, text, cls) { node.textContent = text; node.className = `badge ${cls || ''}`; }
+
+  function renderConnection(s) {
+    const has = !!s.channelId;
+    $('setup').hidden = has;
+    $('channel-box').hidden = !has;
+    if (!has) return;
+    $('ch-name').textContent = s.channelName;
+    $('ch-title').textContent = s.live ? s.liveTitle || '' : '';
+    setBadge($('ch-live'), s.live ? 'LIVE' : '방송 꺼짐', s.live ? 'live' : '');
+    const chat = {
+      connected: ['채팅 연결됨', 'ok'], connecting: ['연결 중…', 'wait'], reconnecting: ['재연결 중…', 'wait'],
+      waiting: ['방송 시작 대기 중', 'wait'], idle: ['연결 안 됨', 'bad'],
+    }[s.chat] || [s.chat, ''];
+    if (s.error) setBadge($('ch-chat'), s.error, 'bad'); else setBadge($('ch-chat'), chat[0], chat[1]);
+  }
+
+  let retry = 0, quitting = false;
   function connect() {
     const ws = new WebSocket(`ws://${location.host}/ws`);
-    ws.onopen = () => { retry = 0; conn.textContent = '연결됨'; conn.className = 'badge ok'; };
+    ws.onopen = () => { retry = 0; setBadge($('conn'), '정상 작동 중', 'ok'); };
     ws.onmessage = (m) => {
       const msg = JSON.parse(m.data);
       if (msg.type === 'hello') {
-        feed.replaceChildren();
+        feed.replaceChildren(el('li', 'empty', '아직 이벤트가 없습니다'));
         msg.recent.forEach(render);
-        workerBadge.textContent = `워커 시작 ${new Date(msg.workerStartedAt).toLocaleTimeString('ko-KR', { hour12: false })}`;
+        renderConnection(msg.connection);
       } else if (msg.type === 'event') render(msg.envelope);
+      else if (msg.type === 'connection') renderConnection(msg.state);
     };
     ws.onclose = () => {
-      conn.textContent = '재연결 중…'; conn.className = 'badge bad';
+      if (quitting) return;
+      setBadge($('conn'), '복구 중…', 'bad');
       setTimeout(connect, Math.min(5000, 300 * 2 ** retry++));
     };
   }
@@ -118,15 +204,30 @@
 
   async function post(path, body) {
     const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-localbot': '1' }, body: JSON.stringify(body ?? {}) });
-    if (!r.ok) alert(`실패: ${r.status}`);
+    return { ok: r.ok, data: await r.json().catch(() => ({})) };
   }
-  for (const [id, path] of [['f-donation', '/api/mock/donation'], ['f-chat', '/api/mock/chat']]) {
-    document.getElementById(id).addEventListener('submit', (e) => {
-      e.preventDefault();
-      post(path, Object.fromEntries(new FormData(e.target)));
-    });
-  }
-  document.getElementById('crash').onclick = () => post('/api/debug/crash');
+
+  $('f-connect').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = $('connect-btn');
+    btn.disabled = true; btn.textContent = '확인 중…'; $('setup-error').textContent = '';
+    const { ok, data } = await post('/api/connection', { input: e.target.input.value });
+    btn.disabled = false; btn.textContent = '연결';
+    if (!ok) $('setup-error').textContent = data.error || '연결에 실패했습니다';
+    else e.target.reset();
+  });
+  // 주소를 붙여넣으면 바로 연결 (진짜 딸깍)
+  $('f-connect').input.addEventListener('paste', () => setTimeout(() => $('f-connect').requestSubmit(), 0));
+
+  $('change').onclick = () => { if (confirm('채널 연결을 해제하고 다른 채널을 입력할까요?')) post('/api/connection/clear'); };
+  $('f-donation').addEventListener('submit', (e) => { e.preventDefault(); post('/api/mock/donation', Object.fromEntries(new FormData(e.target))); });
+  $('crash').onclick = () => post('/api/debug/crash');
+  $('quit').onclick = async () => {
+    if (!confirm('LocalBot을 종료할까요? (OBS 오버레이와 봇이 모두 멈춥니다)')) return;
+    quitting = true;
+    await post('/api/app/quit');
+    document.body.innerHTML = '<main><section style="text-align:center;padding:60px"><h2 style="font-size:18px;color:#e7e9ee">LocalBot이 종료되었습니다</h2><p style="color:#8b91a0">다시 쓰려면 LocalBot.exe를 실행하세요. 이 탭은 닫아도 됩니다.</p></section></main>';
+  };
 </script>
 </body>
 </html>

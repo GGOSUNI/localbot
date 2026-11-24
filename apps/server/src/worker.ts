@@ -2,11 +2,12 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { MockAdapter } from './adapters/mock.ts';
 import { EventBus, envelope } from './core/bus.ts';
 import { config } from './core/config.ts';
+import { ChzzkConnection } from './core/connection.ts';
 import { openDatabase } from './core/db.ts';
 import { Ingest } from './core/ingest.ts';
 import { createLogger } from './core/logger.ts';
 import { backupDir, dashboardKeyPath, dataDir, dbPath } from './core/paths.ts';
-import { startHttp } from './http/server.ts';
+import { type HttpHandle, startHttp } from './http/server.ts';
 import { ensureDashboardKey } from './supervisor.ts';
 
 const log = createLogger('worker');
@@ -41,19 +42,27 @@ export async function runWorker(): Promise<void> {
   const mock = new MockAdapter();
   await mock.start((env) => ingest.push(env));
 
-  let server;
+  let http: HttpHandle | null = null;
+  const connection = new ChzzkConnection(db, ingest, (s) => http?.broadcastConnection(s));
+
   try {
-    server = startHttp({
+    http = startHttp({
       host: config.host,
       port: config.port,
       dashboardKey,
       bus,
       ingest,
       mock,
+      connection,
       workerStartedAt: startedAt,
       onCrashRequested: () => {
         log.warn('crash requested from dashboard');
         process.exit(EXIT.CRASH);
+      },
+      onQuitRequested: () => {
+        // Supervisor에게 앱 전체 종료를 요청 (없으면 자기만 종료)
+        if (process.send) process.send({ type: 'quit' });
+        else shutdown();
       },
     });
   } catch (err) {
@@ -63,12 +72,14 @@ export async function runWorker(): Promise<void> {
 
   ingest.push(envelope('system', { type: 'system', level: 'info', message: `워커 시작 (pid ${process.pid})` }));
 
-  const shutdown = () => {
+  await connection.restore(); // 지난번 채널로 자동 연결
+
+  function shutdown() {
     log.info('shutting down');
-    server.stop(true);
+    http?.stop();
     db.close();
     process.exit(EXIT.OK);
-  };
+  }
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 

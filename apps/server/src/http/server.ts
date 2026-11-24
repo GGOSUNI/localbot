@@ -1,7 +1,8 @@
-import type { Envelope, ServerMessage } from '@localbot/shared';
-import type { Server, ServerWebSocket } from 'bun';
+import type { ConnectionState, Envelope, ServerMessage } from '@localbot/shared';
+import type { ServerWebSocket } from 'bun';
 import type { MockAdapter } from '../adapters/mock.ts';
 import type { EventBus } from '../core/bus.ts';
+import type { ChzzkConnection } from '../core/connection.ts';
 import { VERSION } from '../core/config.ts';
 import type { Ingest } from '../core/ingest.ts';
 import { createLogger } from '../core/logger.ts';
@@ -20,19 +21,27 @@ interface Deps {
   ingest: Ingest;
   mock: MockAdapter;
   workerStartedAt: number;
+  connection: ChzzkConnection;
   onCrashRequested: () => void;
+  onQuitRequested: () => void;
+}
+
+export interface HttpHandle {
+  stop(): void;
+  broadcastConnection(state: ConnectionState): void;
 }
 
 type WsData = { kind: 'dashboard' };
 
-export function startHttp(deps: Deps): Server<WsData> {
+export function startHttp(deps: Deps): HttpHandle {
   const sockets = new Set<ServerWebSocket<WsData>>();
   const json = (data: unknown, status = 200) => Response.json(data, { status });
 
-  deps.bus.on((envelope: Envelope) => {
-    const msg = JSON.stringify({ type: 'event', envelope } satisfies ServerMessage);
+  const broadcast = (m: ServerMessage) => {
+    const msg = JSON.stringify(m);
     for (const ws of sockets) ws.send(msg);
-  });
+  };
+  deps.bus.on((envelope: Envelope) => broadcast({ type: 'event', envelope }));
 
   const server = Bun.serve<WsData>({
     hostname: deps.host,
@@ -65,6 +74,8 @@ export function startHttp(deps: Deps): Server<WsData> {
         return srv.upgrade(req, { data: { kind: 'dashboard' } }) ? undefined : json({ error: 'upgrade failed' }, 400);
       }
 
+      if (url.pathname === '/api/connection' && req.method === 'GET') return json(deps.connection.state);
+
       if (url.pathname === '/api/events' && req.method === 'GET') {
         return json(deps.ingest.recent(Number(url.searchParams.get('limit') ?? 50)));
       }
@@ -73,6 +84,18 @@ export function startHttp(deps: Deps): Server<WsData> {
         if (!csrfOk(req)) return json({ error: 'csrf' }, 403);
         const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
 
+        if (url.pathname === '/api/connection') {
+          const result = await deps.connection.setChannel(str(body.input, ''));
+          return json(result, result.ok ? 200 : 400);
+        }
+        if (url.pathname === '/api/connection/clear') {
+          await deps.connection.clear();
+          return json({ ok: true });
+        }
+        if (url.pathname === '/api/app/quit') {
+          setTimeout(deps.onQuitRequested, 50);
+          return json({ ok: true });
+        }
         if (url.pathname === '/api/mock/chat') {
           deps.mock.chat(str(body.nickname, '테스트시청자'), str(body.text, '안녕하세요'));
           return json({ ok: true });
@@ -96,7 +119,9 @@ export function startHttp(deps: Deps): Server<WsData> {
     websocket: {
       open(ws) {
         sockets.add(ws);
-        const hello: ServerMessage = { type: 'hello', workerStartedAt: deps.workerStartedAt, recent: deps.ingest.recent(50) };
+        const hello: ServerMessage = {
+          type: 'hello', workerStartedAt: deps.workerStartedAt, recent: deps.ingest.recent(50), connection: deps.connection.state,
+        };
         ws.send(JSON.stringify(hello));
       },
       close(ws) {
@@ -114,7 +139,10 @@ export function startHttp(deps: Deps): Server<WsData> {
   });
 
   log.info(`listening on http://${deps.host}:${deps.port}`);
-  return server;
+  return {
+    stop: () => server.stop(true),
+    broadcastConnection: (state) => broadcast({ type: 'connection', state }),
+  };
 }
 
 const str = (v: unknown, fallback: string) => (typeof v === 'string' && v.trim() ? v.trim() : fallback);

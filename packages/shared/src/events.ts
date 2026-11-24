@@ -18,6 +18,8 @@ export type BotEvent =
       amountKRW: number; // 치즈 1 = 1원
       text?: string;
       kind: 'chat' | 'video' | 'mission';
+      /** 플랫폼이 준 후원 고유 ID (있으면 중복 제거에 최우선 사용) */
+      externalId?: string;
     }
   | { type: 'subscription'; viewer: Viewer; months: number; tier?: string }
   | { type: 'stream'; state: 'online' | 'offline' }

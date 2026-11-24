@@ -2,15 +2,20 @@
   "name": "localbot",
   "private": true,
   "version": "0.0.1",
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev": "bun run apps/server/src/main.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit -p .",
-    "build:win": "bun build apps/server/src/main.ts --compile --target=bun-windows-x64 --outfile dist/LocalBot.exe"
+    "build:win": "bun build apps/server/src/main.ts --compile --minify --windows-hide-console --target=bun-windows-x64 --outfile dist/LocalBot.exe",
+    "build:win:debug": "bun build apps/server/src/main.ts --compile --target=bun-windows-x64 --outfile dist/LocalBot-console.exe"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "@localbot/shared": "workspace:*"
   }
 }
