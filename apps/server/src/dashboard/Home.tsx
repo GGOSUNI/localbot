@@ -70,6 +70,15 @@ function Connection({ app }: { app: AppState }) {
         <button className="ghost" onClick={() => confirm('채널 연결을 해제하고 다른 채널을 입력할까요?') && post('/api/connection/clear')}>채널 변경</button>
       </div>
       {c.live && c.liveTitle && <div className="muted" style={{ marginTop: 6 }}>{c.liveTitle}</div>}
+      {c.chat === 'waiting' && (
+        <div className="alert" style={{ marginTop: 10 }}>
+          <b>방송이 켜지면 10초 안에 자동으로 연결됩니다.</b> 지금은 열린 채팅방이 없어서 기다리는 중이에요.
+          <div className="small" style={{ marginTop: 4 }}>
+            ※ <b>리허설·비공개 방송</b>은 외부에 공개되지 않아서 봇이 채팅을 볼 수 없습니다. 방송 전에 확인하려면:
+            ① 아래 <b>테스트 도구</b>로 가짜 후원·채팅 보내기, ② <b>채널 변경</b>으로 지금 방송 중인 다른 채널에 잠깐 연결해 보기
+          </div>
+        </div>
+      )}
       <div className="muted small" style={{ marginTop: 6 }}>
         읽기 전용 연결 — 채팅·후원·구독을 받습니다. 봇의 답장은 아래 목록에 🤖로 표시됩니다 (채팅방에 직접 쓰려면 공식 연결 필요, 준비 중).
       </div>

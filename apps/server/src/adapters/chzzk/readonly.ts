@@ -10,6 +10,7 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const API = 'https://api.chzzk.naver.com';
 const COMM = 'https://comm-api.game.naver.com/nng_main';
 const POLL_MS = 30_000; // 방송 상태·채팅 채널 변경 확인 주기
+const POLL_WAITING_MS = 10_000; // 방송 전(채팅방 없음)에는 더 자주 확인 → 방송 켜면 10초 안에 연결
 const PING_MS = 20_000;
 const SILENCE_MS = 65_000; // 이만큼 아무것도 안 오면 연결이 죽은 것으로 보고 다시 연결
 
@@ -113,7 +114,7 @@ export class ChzzkReadonlyAdapter implements PlatformAdapter {
       this.setState({ error: '치지직 서버에 연결할 수 없습니다 (인터넷 확인)' });
       if (!this.ws && this.chatChannelId && !this.reconnectTimer) this.scheduleReconnect();
     }
-    if (!this.stopped) this.pollTimer = setTimeout(() => this.poll(), POLL_MS);
+    if (!this.stopped) this.pollTimer = setTimeout(() => this.poll(), this.chatChannelId ? POLL_MS : POLL_WAITING_MS);
   }
 
   // ── 채팅 소켓 ──
