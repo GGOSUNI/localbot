@@ -82,7 +82,9 @@ export async function runWorker(): Promise<void> {
     localUrl: (id) => `http://127.0.0.1:${config.port}/media/${id}?key=${encodeURIComponent(overlayKey)}`,
     report: (r) => songs.engine.report(WINDOW_ID, r),
     onStatus: () => http?.broadcastSongs(),
+    onFrame: (jpeg) => http?.broadcastFrame(jpeg),
     extraArgs: process.env.LOCALBOT_BROWSER_ARGS?.split(' ').filter(Boolean),
+    watchBase: process.env.LOCALBOT_YT_WATCH, // 테스트용
   });
   songs.attachWindowPlayer(ytWindow);
 
@@ -112,7 +114,7 @@ export async function runWorker(): Promise<void> {
         setSetting(db, 'overlay.key', overlayKey);
         return overlayKey;
       },
-      bus, ingest, mock, connection, songs, roulette, official,
+      bus, ingest, mock, connection, songs, roulette, official, ytWindow,
       // 공식 로그인한 채널로 채팅·후원 수신도 맞춤
       onOfficialLogin: async (channelId) => {
         if (connection.state.channelId !== channelId) await connection.setChannel(channelId);

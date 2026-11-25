@@ -28,6 +28,8 @@ export interface WindowPlayerOptions {
   localUrl?: (trackId: number) => string;
   report: (r: PlayerReport) => void;
   onStatus?: () => void;
+  /** 창 화면(JPEG base64) — 대시보드 안에 영상을 보여 주기 위함. 초당 약 4장 */
+  onFrame?: (jpegBase64: string) => void;
   /** 테스트용: 브라우저 경로·시청 페이지 주소·추가 인자 */
   browserPath?: string | null;
   watchBase?: string;
@@ -57,10 +59,15 @@ export function findBrowser(): string | null {
 class Cdp {
   private id = 0;
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  private listeners = new Map<string, (params: any) => void>();
   closed = false;
+  on(method: string, fn: (params: any) => void) {
+    this.listeners.set(method, fn);
+  }
   private constructor(private ws: WebSocket) {
     ws.onmessage = (e) => {
       const m = JSON.parse(String(e.data));
+      if (m.method) return this.listeners.get(m.method)?.(m.params);
       const p = m.id ? this.pending.get(m.id) : undefined;
       if (!p) return;
       this.pending.delete(m.id);
@@ -128,6 +135,8 @@ export class WindowPlayer {
   private endedSent = -1;
   private navigatedAt = 0;
   private _status: Status;
+  private visible = false;
+  private lastFrameAt = 0;
 
   constructor(private o: WindowPlayerOptions) {
     this.browserPath = o.browserPath === undefined ? findBrowser() : o.browserPath;
@@ -185,7 +194,52 @@ export class WindowPlayer {
     this.cdp = null;
   }
 
+  /** 유튜브 창을 화면에 보이기/숨기기 (숨겨도 소리는 계속, 영상은 대시보드에 표시됨) */
+  async setVisible(v: boolean) {
+    this.visible = v;
+    await this.applyVisibility();
+  }
+  get isVisible() {
+    return this.visible;
+  }
+
   // ── 내부 ──
+
+  private async applyVisibility() {
+    const port = this.o.debugPort;
+    try {
+      const ver = (await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1500) }).then((r) => r.json())) as { webSocketDebuggerUrl?: string };
+      const list = (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1500) }).then((r) => r.json())) as { id: string; type: string }[];
+      const page = list.find((t) => t.type === 'page');
+      if (!ver.webSocketDebuggerUrl || !page) return;
+      const b = await Cdp.connect(ver.webSocketDebuggerUrl);
+      try {
+        const { windowId } = await b.send<{ windowId: number }>('Browser.getWindowForTarget', { targetId: page.id });
+        await b.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } }).catch(() => {});
+        await b.send('Browser.setWindowBounds', {
+          windowId,
+          bounds: this.visible ? { left: 80, top: 80, width: 660, height: 420 } : { left: -4000, top: -4000, width: 660, height: 420 },
+        });
+      } finally {
+        b.close();
+      }
+    } catch (err) {
+      log.debug('window visibility change failed', String(err));
+    }
+  }
+
+  private startScreencast(cdp: Cdp) {
+    if (!this.o.onFrame) return;
+    cdp.on('Page.screencastFrame', (p: { data: string; sessionId: number }) => {
+      void cdp.send('Page.screencastFrameAck', { sessionId: p.sessionId }).catch(() => {});
+      const now = Date.now();
+      if (now - this.lastFrameAt < 250 || !this.current) return;
+      if (!this.lastFrameAt) log.info('screencast frames flowing');
+      this.lastFrameAt = now;
+      this.o.onFrame?.(p.data);
+    });
+    void cdp.send('Page.startScreencast', { format: 'jpeg', quality: 55, maxWidth: 640, maxHeight: 360 }).catch(() => {});
+  }
 
   private setStatus(s: Status) {
     if (this._status === s) return;
@@ -269,6 +323,13 @@ export class WindowPlayer {
     if (!cdp || cdp.closed) return null;
     const expr = `(() => {
       document.title = ${JSON.stringify(WINDOW_TITLE)};
+      if (!document.getElementById('lb-style')) {
+        const st = document.createElement('style'); st.id = 'lb-style';
+        st.textContent = '#movie_player{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483647!important;background:#000!important}'
+          + '#movie_player video{width:100vw!important;height:100vh!important;left:0!important;top:0!important;object-fit:contain!important}'
+          + 'html,body{overflow:hidden!important;background:#000!important}';
+        (document.head || document.documentElement).appendChild(st);
+      }
       const p = document.querySelector('#movie_player');
       const v = document.querySelector('video.html5-main-video') || document.querySelector('video');
       let vid = null; try { vid = new URL(location.href).searchParams.get('v'); } catch {}
@@ -314,7 +375,12 @@ export class WindowPlayer {
               '--no-first-run',
               '--no-default-browser-check',
               '--autoplay-policy=no-user-gesture-required',
-              '--window-size=520,360',
+              '--window-size=660,420',
+              // 화면 밖에 숨겨도 재생·화면 갱신이 멈추지 않게
+              '--window-position=-4000,-4000',
+              '--disable-backgrounding-occluded-windows',
+              '--disable-renderer-backgrounding',
+              '--disable-background-timer-throttling',
               ...(this.o.extraArgs ?? []),
               '--app=about:blank',
             ],
@@ -337,6 +403,8 @@ export class WindowPlayer {
         const cdp = await Cdp.connect(page);
         await cdp.send('Page.enable').catch(() => {});
         this.cdp = cdp;
+        this.startScreencast(cdp);
+        void this.applyVisibility();
         return cdp;
       } catch (err) {
         log.warn('cdp connect failed', String(err));

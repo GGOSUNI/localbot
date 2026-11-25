@@ -1,6 +1,6 @@
 import type { QueueItem, SongPolicy, SongsState, Station } from '@localbot/shared';
 import { useEffect, useState } from 'react';
-import { fmtTime, post, toast, useOverlayKey } from './store.ts';
+import { fmtTime, post, toast, useFrame, useOverlayKey } from './store.ts';
 
 export function Songs({ s }: { s: SongsState }) {
   return (
@@ -68,6 +68,7 @@ function NowCard({ s }: { s: SongsState }) {
           브라우저가 자동재생을 막았습니다. <a href={`/o/player?key=${key}`} target="_blank" rel="noreferrer">플레이어 탭</a>에서 <b>"클릭해서 소리 켜기"</b>를 눌러 주세요. (OBS에서는 생기지 않습니다)
         </div>
       )}
+      {np && np.track.source === 'youtube' && s.windowPlayer === 'playing' && <WindowVideo />}
       {np ? (
         <div className="now">
           <div className="thumb" style={np.track.source === 'youtube' ? { backgroundImage: `url(https://i.ytimg.com/vi/${np.track.ref}/mqdefault.jpg)` } : {}}>
@@ -106,6 +107,29 @@ function NowCard({ s }: { s: SongsState }) {
         <span className="muted small" style={{ width: 28 }}>{vol}</span>
       </div>
     </section>
+  );
+}
+
+/** 숨겨 둔 유튜브 창의 영상을 대시보드 안에 표시 */
+function WindowVideo() {
+  const f = useFrame();
+  const [shown, setShown] = useState(false);
+  const fresh = !!f; // 정지 화면이면 새 프레임이 안 오므로 마지막 화면을 계속 보여 줌
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ position: 'relative', aspectRatio: '16 / 9', background: '#000', borderRadius: 10, overflow: 'hidden' }}>
+        {fresh
+          ? <img src={`data:image/jpeg;base64,${f!.jpeg}`} alt="재생 중인 영상" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+          : <div className="muted small" style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center' }}>영상 불러오는 중…</div>}
+      </div>
+      <div className="row small muted" style={{ marginTop: 6 }}>
+        <span className="grow">유튜브 창은 화면 밖에 숨겨져 있고, 소리는 그대로 나갑니다.</span>
+        <button className="sm ghost" onClick={async () => {
+          const r = await post('/api/songs/window', { visible: !shown });
+          if (r.ok) setShown(r.data.visible);
+        }}>{shown ? '유튜브 창 숨기기' : '유튜브 창 보이기 (로그인용)'}</button>
+      </div>
+    </div>
   );
 }
 

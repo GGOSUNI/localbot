@@ -35,6 +35,7 @@ interface Deps {
   onOfficialLogin: (channelId: string) => Promise<void>;
   songs: SongService;
   roulette: RouletteService;
+  ytWindow: { setVisible(v: boolean): Promise<void>; isVisible: boolean };
   workerStartedAt: number;
   onCrashRequested: () => void;
   onQuitRequested: () => void;
@@ -44,6 +45,7 @@ export interface HttpHandle {
   stop(): void;
   broadcastConnection(state: ConnectionState): void;
   broadcastOfficial(state: OfficialStatus): void;
+  broadcastFrame(jpeg: string): void;
   broadcastSongs(): void;
   broadcastRoulette(): void;
 }
@@ -57,6 +59,7 @@ type Route = { method: string; re: RegExp; fn: (m: RegExpMatchArray, body: Json)
 
 export function startHttp(deps: Deps): HttpHandle {
   const dashboards = new Set<ServerWebSocket<WsData>>();
+  let lastFrame: string | null = null; // 새로 연 대시보드에도 영상 화면을 바로 보여 주기 위함
   const overlays = new Set<ServerWebSocket<WsData>>();
   const json = (data: unknown, status = 200) => Response.json(data, { status });
 
@@ -146,6 +149,7 @@ export function startHttp(deps: Deps): HttpHandle {
     { method: 'POST', re: /^\/api\/songs\/pause$/, fn: () => (S.engine.pause(), ok) },
     { method: 'POST', re: /^\/api\/songs\/resume$/, fn: () => (S.engine.resume(), ok) },
     { method: 'POST', re: /^\/api\/songs\/volume$/, fn: (_, b) => (S.engine.setVolume(Number(b.volume)), ok) },
+    { method: 'POST', re: /^\/api\/songs\/window$/, fn: async (_, b) => (await deps.ytWindow.setVisible(!!b.visible), { ok: true, visible: deps.ytWindow.isVisible }) },
     { method: 'POST', re: /^\/api\/songs\/retry-youtube$/, fn: () => (S.engine.endFallback(), ok) },
     { method: 'POST', re: /^\/api\/songs\/undo$/, fn: () => ({ ok: true, undone: S.undo() }) },
     { method: 'POST', re: /^\/api\/songs\/clear$/, fn: () => (S.clearQueue(), ok) },
@@ -287,6 +291,7 @@ setTimeout(()=>location.href='http://127.0.0.1:${deps.port}/#home',r.ok?1500:600
             official: deps.official.status(),
           };
           ws.send(JSON.stringify(hello));
+          if (lastFrame) ws.send(JSON.stringify({ type: 'frame', jpeg: lastFrame } satisfies ServerMessage));
           return;
         }
         overlays.add(ws);
@@ -329,6 +334,10 @@ setTimeout(()=>location.href='http://127.0.0.1:${deps.port}/#home',r.ok?1500:600
     stop: () => server.stop(true),
     broadcastConnection: (state) => toDash({ type: 'connection', state }),
     broadcastOfficial: (state) => toDash({ type: 'official', state }),
+    broadcastFrame: (jpeg) => {
+      lastFrame = jpeg;
+      if (dashboards.size) toDash({ type: 'frame', jpeg });
+    },
     broadcastSongs,
     broadcastRoulette,
   };

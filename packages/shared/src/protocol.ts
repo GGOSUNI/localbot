@@ -31,6 +31,8 @@ export interface OfficialStatus {
 export type ServerMessage =
   | { type: 'hello'; workerStartedAt: number; recent: Envelope[]; connection: ConnectionState; songs: SongsState; roulette: RouletteState; official: OfficialStatus }
   | { type: 'official'; state: OfficialStatus }
+  /** 숨겨 둔 유튜브 창의 화면 (JPEG base64) */
+  | { type: 'frame'; jpeg: string }
   | { type: 'event'; envelope: Envelope }
   | { type: 'connection'; state: ConnectionState }
   | { type: 'songs'; state: SongsState }

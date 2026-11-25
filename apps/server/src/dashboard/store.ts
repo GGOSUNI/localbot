@@ -38,6 +38,10 @@ export function startConnection() {
       const m = JSON.parse(String(e.data)) as ServerMessage;
       if (m.type === 'hello') set({ connection: m.connection, songs: m.songs, roulette: m.roulette, official: m.official, events: m.recent.slice().reverse() });
       else if (m.type === 'official') set({ official: m.state });
+      else if (m.type === 'frame') {
+        frame = { jpeg: m.jpeg, at: Date.now() };
+        frameListeners.forEach((l) => l());
+      }
       else if (m.type === 'event') set({ events: [m.envelope, ...state.events].slice(0, 500) });
       else if (m.type === 'connection') set({ connection: m.state });
       else if (m.type === 'songs') set({ songs: m.state });
@@ -50,6 +54,13 @@ export function startConnection() {
     };
   };
   void open();
+}
+
+/** 숨겨 둔 유튜브 창의 최신 화면 */
+let frame: { jpeg: string; at: number } | null = null;
+const frameListeners = new Set<() => void>();
+export function useFrame() {
+  return useSyncExternalStore((l) => (frameListeners.add(l), () => frameListeners.delete(l)), () => frame);
 }
 
 export let quitting = false;
