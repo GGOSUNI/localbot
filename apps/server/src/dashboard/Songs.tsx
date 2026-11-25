@@ -127,7 +127,7 @@ function QueueCard({ s }: { s: SongsState }) {
         <button className="sm ghost danger" disabled={!queue.length} onClick={() => confirm('대기열을 모두 비울까요? (되돌리기 가능)') && post('/api/songs/clear')}>비우기</button>
       </h2>
       <div className="row" style={{ marginBottom: 10 }}>
-        <input className="grow" placeholder="YouTube 링크로 직접 추가 (스트리머 추가는 제한 없음)" value={input}
+        <input className="grow" placeholder="YouTube 링크 또는 곡 이름으로 직접 추가 (스트리머 추가는 제한 없음)" value={input}
           onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && add()} />
         <button className="primary" onClick={add}>추가</button>
       </div>
@@ -149,7 +149,7 @@ function QueueCard({ s }: { s: SongsState }) {
             </li>
           ))}
         </ul>
-      ) : <div className="empty">대기 중인 신청곡이 없습니다. 시청자는 채팅에 <b>!신청곡 유튜브링크</b> 로 신청합니다.</div>}
+      ) : <div className="empty">대기 중인 신청곡이 없습니다. 시청자는 채팅에 <b>!신청곡 곡이름</b> 또는 <b>!신청곡 유튜브링크</b> 로 신청합니다.</div>}
     </section>
   );
 }
@@ -237,6 +237,7 @@ function PolicyCard({ p }: { p: SongPolicy }) {
       </div>
       <div className="form">
         {sw('allowChat', '채팅 신청 (!신청곡)')}
+        {sw('allowSearch', '곡 이름으로 신청 (유튜브 검색)', '!신청곡 아이유 밤편지 처럼 링크 없이 신청')}
         {sw('allowDonation', '후원 메시지 링크로 신청')}
         <label className="f"><span>채팅 신청 가능</span>
           <select value={p.permission} onChange={(e) => set({ permission: e.target.value as SongPolicy['permission'] })}>

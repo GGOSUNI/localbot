@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { config } from './core/config.ts';
 import { createLogger } from './core/logger.ts';
 import { dashboardKeyPath, dataDir, isCompiled, lockPath } from './core/paths.ts';
+import { ensureDesktopShortcut } from './core/shortcut.ts';
 
 const log = createLogger('supervisor');
 
@@ -23,6 +24,7 @@ export async function runSupervisor(): Promise<void> {
     return;
   }
   writeFileSync(lockPath, String(process.pid));
+  ensureDesktopShortcut();
 
   const key = ensureDashboardKey();
   const url = dashboardUrl(key);

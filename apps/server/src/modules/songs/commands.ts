@@ -1,12 +1,9 @@
 import type { CommandRouter } from '../commands.ts';
 import type { SongService } from './service.ts';
-import { parseRequestArg } from './youtube.ts';
 
 export function registerSongCommands(router: CommandRouter, songs: SongService) {
   router.register(['!신청곡', '!sr'], async ({ viewer, args, reply }) => {
-    const id = parseRequestArg(args);
-    if (!id) return reply(`${viewer.nickname}님, 유튜브 링크로 신청해 주세요. 예) !신청곡 https://youtu.be/…`);
-    const r = await songs.request({ videoId: id, viewer, via: 'chat' });
+    const r = await songs.requestByInput({ text: args, viewer, via: 'chat' });
     reply(r.ok ? `${viewer.nickname}님 ${r.message}` : `${viewer.nickname}님, ${r.message}`);
   }, { cooldownMs: 3000 });
 

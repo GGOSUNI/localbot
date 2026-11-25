@@ -9,7 +9,7 @@ import { viewerKey } from '../../core/ingest.ts';
 import { createLogger } from '../../core/logger.ts';
 import { type EngineHost, type Outcome, PERMANENT_YT_ERRORS, type Pick, PlayerEngine } from './engine.ts';
 import { SongStore, toTrack } from './store.ts';
-import { checkOEmbed, findYouTubeId, type OEmbedResult } from './youtube.ts';
+import { checkOEmbed, findYouTubeId, type OEmbedResult, type SearchHit, searchYouTube } from './youtube.ts';
 
 const log = createLogger('songs');
 
@@ -20,6 +20,7 @@ export interface SongDeps {
   db: Database;
   now?: () => number;
   oembed?: (videoId: string) => Promise<OEmbedResult>;
+  search?: (query: string) => Promise<SearchHit[]>;
   random?: () => number;
   /** 사용자에게 보여줄 알림 (대시보드 로그) */
   notify: (level: 'info' | 'warn', message: string) => void;
@@ -35,6 +36,7 @@ export class SongService {
   readonly engine: PlayerEngine;
   private now: () => number;
   private oembed: (id: string) => Promise<OEmbedResult>;
+  private search: (q: string) => Promise<SearchHit[]>;
   private random: () => number;
   private timer: Timer | null = null;
 
@@ -42,6 +44,7 @@ export class SongService {
     this.store = new SongStore(deps.db);
     this.now = deps.now ?? Date.now;
     this.oembed = deps.oembed ?? ((id) => checkOEmbed(id));
+    this.search = deps.search ?? ((q) => searchYouTube(q));
     this.random = deps.random ?? Math.random;
     this.engine = new PlayerEngine(this.host());
 
@@ -175,11 +178,61 @@ export class SongService {
     return { ok: true, item, message };
   }
 
-  /** 후원 메시지에 링크가 있으면 자동 신청 */
+  /**
+   * 링크 또는 곡 이름으로 신청. 곡 이름이면 YouTube에서 검색해서
+   * 길이 제한 안에 들고 퍼가기가 허용된 첫 번째 영상을 고릅니다.
+   */
+  async requestByInput(input: {
+    text: string;
+    viewer: Viewer | null;
+    via: QueueItem['via'];
+    paidKRW?: number;
+  }): Promise<RequestResult> {
+    const text = input.text.trim();
+    const id = findYouTubeId(text) ?? (/^[A-Za-z0-9_-]{11}$/.test(text) ? text : null);
+    if (id) return this.request({ videoId: id, viewer: input.viewer, via: input.via, paidKRW: input.paidKRW });
+    if (!text) return fail('곡 이름이나 유튜브 링크를 같이 적어 주세요. 예) !신청곡 아이유 밤편지');
+    const p = this.policy();
+    if (!p.allowSearch && input.via !== 'dashboard') return fail('유튜브 링크로 신청해 주세요');
+
+    const hits = await this.search(text.slice(0, 100));
+    if (!hits.length) return fail(`"${text}" 검색 결과가 없습니다 (링크로 신청해 보세요)`);
+    const max = input.via === 'dashboard' ? Infinity : p.maxDurationSec;
+    // 생방송(길이 없음)·너무 짧은 것·너무 긴 것 제외, 이미 재생 불가로 확인된 것 제외
+    const candidates = hits.filter((h) => h.durationSec && h.durationSec >= 30 && h.durationSec <= max && !p.blacklistVideos.includes(h.videoId));
+    if (!candidates.length) return fail(`"${text}" — 신청할 수 있는 길이(${Math.floor(p.maxDurationSec / 60)}분 이내)의 영상을 못 찾았습니다`);
+    let lastFail: RequestResult | null = null;
+    for (const h of candidates.slice(0, 3)) {
+      const known = this.store.findTrack('youtube', h.videoId);
+      if (known?.playable === false) continue;
+      if (!known || known.title.startsWith('YouTube ')) {
+        const o = await this.oembed(h.videoId);
+        if (o.ok === false) {
+          const t = this.store.upsertTrack('youtube', h.videoId, h.title, h.author);
+          this.store.setPlayable(t.id, false, null);
+          continue; // 퍼가기 금지 → 다음 후보
+        }
+        const t = this.store.upsertTrack('youtube', h.videoId, o.ok === true ? o.title : h.title, o.ok === true ? o.author : h.author);
+        if (h.durationSec && !t.durationSec) this.store.setDuration(t.id, h.durationSec);
+      }
+      const r = await this.request({ videoId: h.videoId, viewer: input.viewer, via: input.via, paidKRW: input.paidKRW });
+      if (r.ok) return r;
+      lastFail = r;
+      // 중복·최근곡이면 다음 후보로 넘기지 않고 그대로 알려줌 (같은 곡을 원한 것이므로)
+      if (/이미 대기열|최근에 재생|최대 \d+곡|받지 않습니다|구독자|매니저/.test(r.message)) return r;
+    }
+    return lastFail ?? fail(`"${text}" — 재생할 수 있는 영상을 못 찾았습니다`);
+  }
+
+  /** 후원 메시지에 링크가 있거나 "!신청곡 곡이름"이면 자동 신청 */
   async onDonation(viewer: Viewer | null, amountKRW: number, text: string | undefined) {
-    const id = text ? findYouTubeId(text) : null;
-    if (!id) return;
-    const r = await this.request({ videoId: id, viewer, via: 'donation', paidKRW: amountKRW });
+    if (!text) return;
+    const id = findYouTubeId(text);
+    const cmd = text.trim().match(/^!(?:신청곡|sr)\s+(.+)$/i);
+    if (!id && !cmd) return;
+    const r = id
+      ? await this.request({ videoId: id, viewer, via: 'donation', paidKRW: amountKRW })
+      : await this.requestByInput({ text: cmd![1]!, viewer, via: 'donation', paidKRW: amountKRW });
     this.deps.reply(r.ok ? `${viewer?.nickname ?? '익명'}님 ${r.message}` : `${viewer?.nickname ?? '익명'}님, ${r.message}`);
   }
 
@@ -512,7 +565,7 @@ function sanitizePolicy(p: Partial<SongPolicy>): Partial<SongPolicy> {
   const out: Partial<SongPolicy> = {};
   const nums = ['maxDurationSec', 'perUserLimit', 'recentBlockMinutes', 'donationMinKRW', 'donationPriorityKRW', 'stationNoRepeat'] as const;
   for (const k of nums) if (p[k] !== undefined && Number.isFinite(Number(p[k]))) out[k] = Math.max(0, Math.floor(Number(p[k])));
-  const bools = ['open', 'allowChat', 'allowDonation', 'dedupQueue', 'approvalMode', 'interruptStation'] as const;
+  const bools = ['open', 'allowChat', 'allowSearch', 'allowDonation', 'dedupQueue', 'approvalMode', 'interruptStation'] as const;
   for (const k of bools) if (typeof p[k] === 'boolean') out[k] = p[k];
   if (p.permission && ['everyone', 'subscriber', 'manager'].includes(p.permission)) out.permission = p.permission;
   if (Array.isArray(p.blacklistVideos)) out.blacklistVideos = p.blacklistVideos.map((v) => findYouTubeId(String(v)) ?? String(v).trim()).filter(Boolean);

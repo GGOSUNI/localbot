@@ -443,3 +443,72 @@ describe('스테이션', () => {
     expect(seen).toEqual([V(1), V(2), V(3), V(1)]);
   });
 });
+
+describe('곡 이름으로 신청 (검색)', () => {
+  const hits = (list: [string, string, number | null][]) => async () =>
+    list.map(([videoId, title, durationSec]) => ({ videoId, title, author: null, durationSec }));
+
+  function setupSearch(list: [string, string, number | null][], oembed: Record<string, OEmbedResult> = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'lb-search-'));
+    dirs.push(dir);
+    const db = openDatabase(join(dir, 'bot.db'), join(dir, 'backups'));
+    const replies: string[] = [];
+    const svc = new SongService({
+      db, now: () => 1_800_000_000_000, notify: () => {}, reply: (t) => replies.push(t), onChange: () => {},
+      oembed: async (id) => oembed[id] ?? { ok: true, title: `제목 ${id}`, author: null },
+      search: hits(list),
+    });
+    return { svc, replies };
+  }
+
+  test('!신청곡 곡이름 → 검색 첫 결과 신청, 길이도 미리 앎', async () => {
+    const { svc } = setupSearch([[V(1), '백넘버 - 히로인', 269]]);
+    const r = await svc.requestByInput({ text: '백넘버', viewer: viewer('a'), via: 'chat' });
+    expect(r.ok).toBe(true);
+    expect(svc.store.queued()[0]!.track).toMatchObject({ ref: V(1), durationSec: 269 });
+  });
+
+  test('생방송·너무 긴 것·퍼가기 금지는 건너뛰고 다음 후보', async () => {
+    const { svc } = setupSearch(
+      [[V(1), '라이브', null], [V(2), '1시간 모음', 3600], [V(3), '퍼가기 금지', 200], [V(4), '정상', 210]],
+      { [V(3)]: { ok: false, reason: '퍼가기가 금지된 영상' } },
+    );
+    const r = await svc.requestByInput({ text: '노래', viewer: viewer('a'), via: 'chat' });
+    expect(r.ok && r.item.track.ref).toBe(V(4));
+  });
+
+  test('링크는 검색 없이 바로, 검색 끄면 링크만', async () => {
+    const { svc } = setupSearch([]);
+    expect((await svc.requestByInput({ text: `https://youtu.be/${V(9)}`, viewer: viewer('a'), via: 'chat' })).ok).toBe(true);
+    svc.setPolicy({ allowSearch: false });
+    expect((await svc.requestByInput({ text: '아이유', viewer: viewer('b'), via: 'chat' })).message).toContain('링크로');
+  });
+
+  test('검색 결과 없음 / 빈 입력', async () => {
+    const { svc } = setupSearch([]);
+    expect((await svc.requestByInput({ text: '없는노래', viewer: viewer('a'), via: 'chat' })).message).toContain('검색 결과가 없습니다');
+    expect((await svc.requestByInput({ text: '  ', viewer: viewer('a'), via: 'chat' })).message).toContain('곡 이름');
+  });
+
+  test('후원 메시지 "!신청곡 곡이름"도 신청 + 우선 재생', async () => {
+    const { svc, replies } = setupSearch([[V(5), '구공탄 - 탕탕탕', 156]]);
+    await svc.request({ videoId: V(1), viewer: viewer('x'), via: 'chat' });
+    await svc.onDonation(viewer('치즈왕'), 5000, '!신청곡 구공탄');
+    expect(svc.store.queued()[0]!.track.ref).toBe(V(5));
+    expect(replies.at(-1)).toContain('치즈왕님');
+    await svc.onDonation(viewer('y'), 1000, '그냥 응원합니다'); // 신청 아님
+    expect(svc.store.queued()).toHaveLength(2);
+  });
+});
+
+test('YouTube 검색 결과 페이지 파싱', async () => {
+  const { parseSearchHtml, parseDuration } = await import('../apps/server/src/modules/songs/youtube.ts');
+  const data = { contents: { a: [{ videoRenderer: { videoId: 'abcdefghijk', title: { runs: [{ text: '곡 ' }, { text: '제목' }] }, lengthText: { simpleText: '1:02:03' }, ownerText: { runs: [{ text: '채널' }] } } }, { videoRenderer: { videoId: 'livelivelive', title: { runs: [{ text: 'LIVE' }] } } }] } };
+  const html = `<script>var ytInitialData = ${JSON.stringify(data)};</script>`;
+  expect(parseSearchHtml(html)).toEqual([
+    { videoId: 'abcdefghijk', title: '곡 제목', author: '채널', durationSec: 3723 },
+    { videoId: 'livelivelive', title: 'LIVE', author: null, durationSec: null },
+  ]);
+  expect(parseSearchHtml('<html>nothing</html>')).toEqual([]);
+  expect(parseDuration('4:29')).toBe(269);
+});

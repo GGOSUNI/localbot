@@ -15,7 +15,6 @@ import roulettePage from '../overlays/roulette.html';
 import { fromShareCode, TEMPLATES, toShareCode } from '../modules/roulette/logic.ts';
 import type { RouletteService } from '../modules/roulette/service.ts';
 import type { SongService } from '../modules/songs/service.ts';
-import { findYouTubeId } from '../modules/songs/youtube.ts';
 import { csrfOk, hasSession, hostAllowed, sessionCookie, timingSafeEqual } from './security.ts';
 
 const log = createLogger('http');
@@ -123,9 +122,7 @@ export function startHttp(deps: Deps): HttpHandle {
     { method: 'GET', re: /^\/api\/songs$/, fn: () => S.state() },
     {
       method: 'POST', re: /^\/api\/songs\/request$/, fn: async (_, b) => {
-        const vid = findYouTubeId(String(b.input ?? '')) ?? (/^[\w-]{11}$/.test(String(b.input ?? '').trim()) ? String(b.input).trim() : null);
-        if (!vid) return { ok: false, message: 'YouTube 링크를 확인해 주세요' };
-        const r = await S.request({ videoId: vid, viewer: null, via: 'dashboard' });
+        const r = await S.requestByInput({ text: String(b.input ?? ''), viewer: null, via: 'dashboard' });
         return { ok: r.ok, message: r.message };
       },
     },

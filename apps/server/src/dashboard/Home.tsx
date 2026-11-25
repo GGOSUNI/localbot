@@ -108,7 +108,7 @@ function Summary({ app }: { app: AppState }) {
 function TestTools() {
   const [nick, setNick] = useState('테스트시청자');
   const [amount, setAmount] = useState(5000);
-  const [text, setText] = useState('https://youtu.be/dQw4w9WgXcQ 신청합니다!');
+  const [text, setText] = useState('!신청곡 아이유 밤편지');
   const [chat, setChat] = useState('!현재곡');
   const [mgr, setMgr] = useState(false);
   return (

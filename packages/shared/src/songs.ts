@@ -53,6 +53,8 @@ export interface Station {
 export interface SongPolicy {
   open: boolean;
   allowChat: boolean;
+  /** 링크 대신 곡 이름으로 신청 (YouTube 검색) */
+  allowSearch: boolean;
   allowDonation: boolean;
   permission: 'everyone' | 'subscriber' | 'manager';
   maxDurationSec: number;
@@ -71,6 +73,7 @@ export interface SongPolicy {
 export const DEFAULT_SONG_POLICY: SongPolicy = {
   open: true,
   allowChat: true,
+  allowSearch: true,
   allowDonation: true,
   permission: 'everyone',
   maxDurationSec: 480,
