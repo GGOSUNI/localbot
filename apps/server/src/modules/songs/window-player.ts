@@ -119,6 +119,21 @@ class Cdp {
  */
 export const PAGE_SCRIPT = `(() => {
   if (window.__lb) return; window.__lb = 1;
+  // 볼륨 고정: 유튜브가 자기 저장 볼륨(보통 100%)으로 틀어도 첫 소리부터 LocalBot 볼륨으로 (시작할 때 소리 튀는 것 방지)
+  const vd = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'volume');
+  if (vd && vd.set && vd.get && !HTMLMediaElement.prototype.__lbVolHook) {
+    HTMLMediaElement.prototype.__lbVolHook = true;
+    Object.defineProperty(HTMLMediaElement.prototype, 'volume', {
+      configurable: true, enumerable: vd.enumerable,
+      get() { return vd.get.call(this); },
+      set(x) { const w = window.__lbVol; vd.set.call(this, typeof w === 'number' ? w : x); },
+    });
+  }
+  const forceVol = (e) => {
+    const m = e.target;
+    if (m && (m.tagName === 'VIDEO' || m.tagName === 'AUDIO') && typeof window.__lbVol === 'number' && m.volume !== window.__lbVol) { try { m.volume = window.__lbVol; } catch {} }
+  };
+  ['loadstart', 'loadedmetadata', 'canplay', 'play', 'playing', 'volumechange'].forEach((t) => document.addEventListener(t, forceVol, true));
   const CSS = 'html,body{overflow:hidden!important;background:#000!important}'
     + '#movie_player{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483647!important;background:#000!important}'
     + '#movie_player .html5-video-container{position:absolute!important;inset:0!important;width:100%!important;height:100%!important}'
@@ -214,6 +229,8 @@ export class WindowPlayer {
   private _status: Status;
   private visible = false;
   private lastFrameAt = 0;
+  /** 새 페이지가 열리자마자 쓸 볼륨 (페이지 스크립트보다 먼저 들어감) */
+  private volScriptId: string | null = null;
 
   constructor(private o: WindowPlayerOptions) {
     this.browserPath = o.browserPath === undefined ? findBrowser() : o.browserPath;
@@ -317,6 +334,14 @@ export class WindowPlayer {
     }
   }
 
+  private async presetVolume(cdp: Cdp) {
+    if (this.volScriptId) await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: this.volScriptId }).catch(() => {});
+    const r = await cdp
+      .send<{ identifier: string }>('Page.addScriptToEvaluateOnNewDocument', { source: `window.__lbVol = ${this.volume / 100};` })
+      .catch(() => null);
+    this.volScriptId = r?.identifier ?? null;
+  }
+
   private startScreencast(cdp: Cdp) {
     if (!this.o.onFrame) return;
     cdp.on('Page.screencastFrame', (p: { data: string; sessionId: number }) => {
@@ -357,6 +382,7 @@ export class WindowPlayer {
       const url = cmd.track.source === 'local' && this.o.localUrl
         ? `${this.o.localUrl(cmd.track.id)}#t=${Math.floor(cmd.position)}`
         : this.watchUrl(cmd.track.ref, cmd.position);
+      await this.presetVolume(cdp);
       await cdp.send('Page.navigate', { url });
       await cdp.send('Page.bringToFront').catch(() => {});
       this.setStatus('playing');
@@ -428,6 +454,7 @@ export class WindowPlayer {
     if (!cdp || cdp.closed) return null;
     const expr = `(() => {
       document.title = ${JSON.stringify(WINDOW_TITLE)};
+      window.__lbVol = ${this.volume / 100};
       ${PAGE_SCRIPT}
       const p = document.querySelector('#movie_player');
       const v = document.querySelector('video.html5-main-video') || document.querySelector('video');
@@ -505,6 +532,7 @@ export class WindowPlayer {
         await cdp.send('Page.enable').catch(() => {});
         await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: PAGE_SCRIPT }).catch(() => {});
         this.cdp = cdp;
+        this.volScriptId = null; // 새 연결: 예전 연결에서 넣은 스크립트는 사라짐
         await this.applyViewport();
         this.startScreencast(cdp);
         // 처음엔 화면 밖에 띄우므로 창을 옮길 필요 없음 (사용자가 '보이기'를 눌러 둔 경우만)

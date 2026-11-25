@@ -40,6 +40,21 @@ beforeAll(() => {
         pageState = Object.fromEntries(u.searchParams);
         return new Response('ok');
       }
+      if (u.pathname === '/watch' && u.searchParams.get('v') === 'loudstart11') {
+        // 유튜브처럼: 페이지가 열리자마자 자기 저장 볼륨(100%)으로 맞추고 재생 → 시작할 때 소리가 튀는지 기록
+        return new Response(`<!doctype html><title>fake yt</title>
+          <div id="movie_player" class="html5-video-player"><div class="html5-video-container"><video class="html5-main-video" src="/b.wav"></video></div></div>
+          <script>
+            const v = document.querySelector('video');
+            let max = 0;
+            const rec = () => { if (!v.paused) max = Math.max(max, v.volume); };
+            v.volume = 1; v.play().catch(() => {});
+            v.addEventListener('playing', () => { v.volume = 1; rec(); });
+            const iv = setInterval(rec, 5);
+            setTimeout(() => { v.volume = 1; }, 300);
+            setTimeout(() => { clearInterval(iv); fetch('/state?max=' + max + '&now=' + v.volume); }, 2500);
+          </script>`, { headers: { 'content-type': 'text/html' } });
+      }
       if (u.pathname === '/watch' && u.searchParams.get('v') === 'autoplay123') {
         // 유튜브처럼: 영상이 끝나면(ended) 바로 다음 추천 영상으로 넘어감
         return new Response(`<!doctype html><title>fake yt</title>
@@ -143,6 +158,24 @@ describe.skipIf(!hasChrome)('유튜브 창 플레이어 (실제 크로미움)', 
     for (let i = 0; i < 20 && !frames.length; i++) await Bun.sleep(250);
     expect(frames.length).toBeGreaterThan(0);
     for (const f of frames) expect(jpegSize(f)).toEqual({ w: 640, h: 360 }); // 찌그러진 프레임은 대시보드로 안 보냄
+    await wp.shutdown();
+  }, 30_000);
+
+  test('곡 시작 때 소리 안 튐: 유튜브가 100%로 맞춰도 첫 소리부터 LocalBot 볼륨', async () => {
+    pageState = null;
+    const wp = new WindowPlayer({
+      dataDir: join(dir, 'vol'), debugPort: 9338, enabled: () => true, report: () => {},
+      browserPath: CHROME, watchBase: `http://127.0.0.1:${server.port}/watch`, extraArgs: ['--headless=new', '--no-sandbox', '--mute-audio'],
+    });
+    wp.send({ op: 'play', seq: 1, position: 0, volume: 30, paused: false, track: { id: 6, source: 'youtube', ref: 'loudstart11', title: 'loud' } });
+    for (let i = 0; i < 60 && !pageState; i++) await Bun.sleep(200);
+    expect(pageState).not.toBeNull();
+    expect(Number(pageState!.max)).toBeGreaterThan(0); // 실제로 재생됨
+    expect(Number(pageState!.max)).toBeLessThanOrEqual(0.3); // 한 번도 30% 넘게 안 올라감
+    expect(Number(pageState!.now)).toBeCloseTo(0.3);
+    // 재생 중 볼륨 바꾸기도 그대로 적용
+    wp.send({ op: 'volume', volume: 50 });
+    await Bun.sleep(1500);
     await wp.shutdown();
   }, 30_000);
 
