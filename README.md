@@ -3,7 +3,7 @@
 **`LocalBot.exe` 하나, 채널 주소 붙여넣기 하나로 끝.**
 서버·회원가입·API 키 없이 내 PC에서 돌아가는 치지직 봇입니다. 신청곡, 자동 스테이션, 룰렛, OBS 오버레이를 한 번에.
 
-> ⬇ **[LocalBot v0.5.0 다운로드 (Windows, 52MB)](https://github.com/GGOSUNI/localbot/raw/download/LocalBot-v0.5.0-win-x64.zip)** — zip을 풀고 `LocalBot.exe`를 더블클릭
+> ⬇ **[LocalBot v0.5.1 다운로드 (Windows, 52MB)](https://github.com/GGOSUNI/localbot/raw/download/LocalBot-v0.5.1-win-x64.zip)** — zip을 풀고 `LocalBot.exe`를 더블클릭
 
 ---
 
