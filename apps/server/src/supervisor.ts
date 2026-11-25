@@ -4,6 +4,7 @@ import { config } from './core/config.ts';
 import { createLogger } from './core/logger.ts';
 import { dashboardKeyPath, dataDir, isCompiled, lockPath } from './core/paths.ts';
 import { ensureDesktopShortcut } from './core/shortcut.ts';
+import { showErrorBox, takeOverPort } from './core/takeover.ts';
 
 const log = createLogger('supervisor');
 
@@ -25,6 +26,17 @@ export async function runSupervisor(): Promise<void> {
   }
   writeFileSync(lockPath, String(process.pid));
   ensureDesktopShortcut();
+
+  // 다른 폴더의 (예전) LocalBot이 켜져 있으면 끄고 이어받음 — 마지막에 실행한 것이 이김
+  const port = await takeOverPort(config.host, config.port);
+  if (port === 'taken-over') log.info('예전 LocalBot을 종료하고 이어받았습니다');
+  if (port === 'foreign') {
+    const msg = `포트 ${config.port}을(를) 다른 프로그램이 쓰고 있어서 LocalBot을 시작할 수 없습니다.\n그 프로그램을 끄고 다시 실행해 주세요.`;
+    log.error(msg);
+    showErrorBox(msg);
+    releaseLock();
+    process.exit(1);
+  }
 
   const key = ensureDashboardKey();
   const url = dashboardUrl(key);
