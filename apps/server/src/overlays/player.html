@@ -5,7 +5,8 @@
 <title>LocalBot 플레이어</title>
 <style>
   html, body { margin: 0; background: transparent; color: #e7e9ee; font: 14px/1.5 system-ui, "Malgun Gothic", sans-serif; }
-  .media { position: fixed; left: -10000px; top: 0; width: 320px; height: 180px; }
+  /* YouTube는 200×200보다 작거나 화면 밖에 있는 플레이어를 막거나 멈출 수 있어서: 화면 안, 충분한 크기, 거의 투명 */
+  .media { position: fixed; left: 0; top: 0; width: 480px; height: 270px; opacity: 0.01; pointer-events: none; z-index: -1; }
   #panel { display: none; max-width: 520px; margin: 40px auto; background: #171a21; border: 1px solid #262a33; border-radius: 12px; padding: 20px; }
   body.browser { background: #0f1115; }
   body.browser #panel { display: block; }

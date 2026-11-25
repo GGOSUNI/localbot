@@ -215,6 +215,7 @@ describe('재생 엔진 — 장애 대응 (카오스)', () => {
     expect(pre.ref).toBe(V(2));
     p.verified(pre.trackId, false, null, 150);
     expect(svc.store.queued()).toHaveLength(0); // V(2)가 빠짐 (V(1)은 재생 중)
+    await Bun.sleep(5); // 다른 영상으로 바꾸기를 먼저 시도 → 대체 영상이 없으면 안내
     expect(replies.at(-1)).toContain('재생할 수 없는 영상');
     expect(svc.store.track(pre.trackId)!.playable).toBe(false);
   });
@@ -730,4 +731,30 @@ test('스킵 직후 이전 곡의 늦은 "끝남" 신호로 다음 곡들이 연
   p.hb(2);
   p.ended();
   expect(svc.engine.np?.track.ref).toBe(V(3));
+});
+
+test('신청곡 영상이 재생 금지(150)면 같은 곡의 다른 영상으로 자동 교체, 순서 유지', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lb-repl-'));
+  dirs.push(dir);
+  const db = openDatabase(join(dir, 'bot.db'), join(dir, 'backups'));
+  const replies: string[] = [];
+  const svc = new SongService({
+    db, notify: () => {}, reply: (t) => replies.push(t), onChange: () => {}, mix: async () => [],
+    oembed: async (id) => ({ ok: true, title: `곡 ${id}`, author: null }),
+    search: async () => [
+      { videoId: V(20), title: '밤편지 MV', author: '아이유', durationSec: 250 },
+      { videoId: V(21), title: '밤편지 가사', author: '가사채널', durationSec: 250 },
+    ],
+  });
+  const p = player(svc);
+  await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
+  await svc.requestByInput({ text: '아이유 밤편지', viewer: viewer('b'), via: 'chat' });
+  await svc.request({ videoId: V(3), viewer: viewer('c'), via: 'chat' });
+  const pre = p.cmds().find((c) => c.op === 'prefetch') as any;
+  expect(pre.ref).toBe(V(20));
+  p.verified(pre.trackId, false, null, 150); // 공식 MV는 퍼가기 금지
+  await Bun.sleep(5);
+  expect(svc.store.queued().map((q) => q.track.ref)).toEqual([V(21), V(3)]); // 가사 영상으로, 같은 자리
+  expect(svc.store.queued()[0]!.requesterName).toBe('b');
+  expect(replies.at(-1)).toContain('다른 영상으로 바꿨어요');
 });

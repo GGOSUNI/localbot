@@ -63,11 +63,11 @@ function loadYT(): Promise<void> {
       const done = () => ++n === 2 && (clearTimeout(timeout), resolve());
       const vars = { autoplay: 1, controls: 0, disablekb: 1, playsinline: 1, rel: 0, origin: location.origin };
       ytMain = new window.YT!.Player('yt-main', {
-        width: 320, height: 180, playerVars: vars,
+        width: 480, height: 270, playerVars: vars,
         events: { onReady: done, onStateChange: onMainState, onError: (e: { data: number }) => onMainError(e.data) },
       });
       ytPre = new window.YT!.Player('yt-pre', {
-        width: 320, height: 180, playerVars: vars,
+        width: 480, height: 270, playerVars: vars,
         events: { onReady: done, onStateChange: onPreState, onError: (e: { data: number }) => onPreError(e.data) },
       });
     };

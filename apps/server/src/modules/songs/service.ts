@@ -233,6 +233,8 @@ export class SongService {
     viewer: Viewer | null;
     via: QueueItem['via'];
     paidKRW?: number;
+    /** 곡 이름으로 신청했을 때의 검색어 (영상이 막혀 있으면 다른 영상으로 바꾸는 데 씀) */
+    query?: string;
   }): Promise<RequestResult> {
     const p = this.policy();
     const { videoId, viewer, via } = input;
@@ -285,7 +287,7 @@ export class SongService {
     const status = p.approvalMode && !isDash && !isManager ? 'pending_approval' : 'queued';
     const item = this.store.addToQueue({
       trackId: track.id, requesterKey: key, requesterName: viewer?.nickname ?? (via === 'dashboard' ? '스트리머' : '익명'),
-      priority, status, via, paidKRW: paid, at: this.now(),
+      priority, status, via, paidKRW: paid, at: this.now(), query: input.query ?? null,
     });
     log.info(`request #${item.id} "${track.title}" by ${item.requesterName} (${via}${priority ? ', 우선' : ''})`);
 
@@ -339,13 +341,35 @@ export class SongService {
         const t = this.store.upsertTrack('youtube', h.videoId, o.ok === true ? o.title : h.title, o.ok === true ? o.author : h.author);
         if (h.durationSec && !t.durationSec) this.store.setDuration(t.id, h.durationSec);
       }
-      const r = await this.request({ videoId: h.videoId, viewer: input.viewer, via: input.via, paidKRW: input.paidKRW });
+      const r = await this.request({ videoId: h.videoId, viewer: input.viewer, via: input.via, paidKRW: input.paidKRW, query: text });
       if (r.ok) return r;
       lastFail = r;
       // 중복·최근곡이면 다음 후보로 넘기지 않고 그대로 알려줌 (같은 곡을 원한 것이므로)
       if (/이미 대기열|최근에 재생|최대 \d+곡|받지 않습니다|구독자|매니저/.test(r.message)) return r;
     }
     return lastFail ?? fail(`"${text}" — 재생할 수 있는 영상을 못 찾았습니다`);
+  }
+
+  /**
+   * 신청곡 영상이 막혀 있을 때(퍼가기 금지 등) 같은 곡의 다른 영상으로 바꿔 넣기.
+   * 곡 이름 신청은 그 검색어로, 링크 신청은 영상 제목으로 다시 찾음. 막힌 영상은 이미 '재생 불가'로 기록돼 후보에서 빠짐.
+   * @param keepPosition 대기 중이던 곡이면 그 자리 그대로, 재생 중 실패면 맨 앞으로
+   */
+  private async replaceBlocked(old: QueueItem, keepPosition: boolean): Promise<boolean> {
+    const prev = this.store.rawQueueState(old.id);
+    const query = this.store.queueQuery(old.id) ?? relatedTitleQuery(old.track.title);
+    if (!query) return false;
+    const viewer: Viewer | null = old.requesterKey
+      ? { platform: 'chzzk', id: old.requesterKey.replace(/^chzzk:/, ''), nickname: old.requesterName ?? '익명', roles: ['manager'] } // 이미 받은 신청이므로 제한 다시 안 걸기
+      : null;
+    const r = await this.requestByInput({ text: query, viewer, via: old.via === 'dashboard' ? 'dashboard' : old.via, paidKRW: old.paidKRW });
+    if (!r.ok) return false;
+    if (prev) this.store.setPosition(r.item.id, keepPosition ? prev.position : this.store.minPosition() - 1, prev.priority);
+    log.info(`replaced blocked "${old.track.title}" → "${r.item.track.title}"`);
+    this.deps.reply(`🔁 ${old.requesterName ?? ''}님 신청곡 영상이 재생 금지라서 다른 영상으로 바꿨어요: ${r.item.track.title}`);
+    this.deps.onChange();
+    this.engine.prefetch();
+    return true;
   }
 
   /** 후원 메시지에 링크가 있거나 "!신청곡 곡이름"이면 자동 신청 */
@@ -630,7 +654,14 @@ export class SongService {
 
       peekUnverified: () => {
         const next = this.store.queued().find((q) => q.id !== this.engine.np?.queueId);
-        return next && next.track.source === 'youtube' && next.track.playable === null ? next.track : null;
+        if (next) return next.track.source === 'youtube' && next.track.playable === null ? next.track : null;
+        // 신청곡이 없으면 스테이션에서 다음에 나올 곡들을 미리 확인 → 막힌 곡은 재생 전에 빠짐
+        const sid = this.activeStationId();
+        const st = sid ? this.store.station(sid) : null;
+        if (!st || st.mode === 'shuffle' && st.kind !== 'auto') return null;
+        const upcoming = this.store.stationCandidates(st.id, false).filter((r) => r.ord > st.cursor).slice(0, 3);
+        const u = upcoming.find((r) => r.source === 'youtube' && r.playable === null && r.id !== this.engine.np?.track.id);
+        return u ? toTrack(u) : null;
       },
 
       onStarted: (np) => {
@@ -655,7 +686,14 @@ export class SongService {
         if (outcome === 'failed') {
           const permanent = typeof code === 'number' && PERMANENT_YT_ERRORS.has(code);
           this.store.trackFailed(np.track.id, permanent);
-          if (np.kind === 'request') this.deps.reply(`⚠️ ${np.requesterName ?? ''}님 신청곡 "${np.track.title}" — 재생할 수 없어 넘어갑니다 (${reason})`);
+          if (np.kind === 'request' && permanent && np.queueId) {
+            const it = this.store.item(np.queueId);
+            if (it) {
+              void this.replaceBlocked(it, false).then((done) => {
+                if (!done) this.deps.reply(`⚠️ ${np.requesterName ?? ''}님 신청곡 "${np.track.title}" — 재생할 수 없어 넘어갑니다 (${reason})`);
+              });
+            }
+          } else if (np.kind === 'request') this.deps.reply(`⚠️ ${np.requesterName ?? ''}님 신청곡 "${np.track.title}" — 재생할 수 없어 넘어갑니다 (${reason})`);
           else this.deps.notify('warn', `스테이션 곡 재생 실패로 넘어감: ${np.track.title} (${reason})`);
         }
         // 끝까지 들은 신청곡은 "인기 신청곡" 스테이션에 자동 추가
@@ -671,7 +709,9 @@ export class SongService {
         if (!ok) {
           this.store.setPlayable(trackId, false, null);
           for (const it of this.store.failQueuedWithTrack(trackId, this.now(), `재생 불가 (${code})`)) {
-            this.deps.reply(`⚠️ ${it.requesterName ?? ''}님 신청곡 "${t.title}" — 재생할 수 없는 영상이라 대기열에서 뺐습니다`);
+            void this.replaceBlocked(it, true).then((done) => {
+              if (!done) this.deps.reply(`⚠️ ${it.requesterName ?? ''}님 신청곡 "${t.title}" — 재생할 수 없는 영상이라 대기열에서 뺐습니다`);
+            });
           }
         } else {
           this.store.setPlayable(trackId, true, duration);
@@ -753,4 +793,15 @@ export function artistKey(author: string | null | undefined, title: string): str
   if (a.length >= 2) return a;
   const t = fromTitle && fromTitle !== title ? clean(fromTitle) : '';
   return t.length >= 2 ? t : null;
+}
+
+/** 링크로 신청한 곡을 다시 찾을 검색어: 제목에서 [MV]·(Official…) 같은 꾸밈말 제거 */
+export function relatedTitleQuery(title: string): string | null {
+  if (!title || title.startsWith('YouTube ')) return null;
+  const t = title
+    .replace(/[\[(【].*?[\])】]/g, ' ')
+    .replace(/(official|music video|m\/v|\bmv\b|lyrics?|가사|audio|performance video|4k|remaster(ed)?)/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return t.length >= 2 ? t.slice(0, 60) : null;
 }

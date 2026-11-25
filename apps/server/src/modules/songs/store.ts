@@ -91,15 +91,15 @@ export class SongStore {
   }
   addToQueue(i: {
     trackId: number; requesterKey: string | null; requesterName: string | null; priority: number;
-    status: QueueStatus; via: QueueItem['via']; paidKRW: number; at: number;
+    status: QueueStatus; via: QueueItem['via']; paidKRW: number; at: number; query?: string | null;
   }): QueueItem {
     const pos = (this.db.query('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM queue').get() as { p: number }).p;
     const r = this.db
       .query(
-        `INSERT INTO queue(track_id, requester_key, requester_name, priority, position, status, via, paid_krw, requested_at)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        `INSERT INTO queue(track_id, requester_key, requester_name, priority, position, status, via, paid_krw, requested_at, query)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
-      .get(i.trackId, i.requesterKey, i.requesterName, i.priority, pos, i.status, i.via, i.paidKRW, i.at) as { id: number };
+      .get(i.trackId, i.requesterKey, i.requesterName, i.priority, pos, i.status, i.via, i.paidKRW, i.at, i.query ?? null) as { id: number };
     return this.item(r.id)!;
   }
   setStatus(id: number, status: QueueStatus, at: number, reason: string | null = null) {
@@ -110,6 +110,9 @@ export class SongStore {
   setPosition(id: number, position: number, priority?: number) {
     if (priority === undefined) this.db.query('UPDATE queue SET position = ? WHERE id = ?').run(position, id);
     else this.db.query('UPDATE queue SET position = ?, priority = ? WHERE id = ?').run(position, priority, id);
+  }
+  queueQuery(id: number): string | null {
+    return (this.db.query('SELECT query FROM queue WHERE id = ?').get(id) as { query: string | null } | null)?.query ?? null;
   }
   rawQueueState(id: number): { status: QueueStatus; position: number; priority: number } | null {
     return this.db.query('SELECT status, position, priority FROM queue WHERE id = ?').get(id) as any;

@@ -152,4 +152,9 @@ export const migrations: { version: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 3,
+    name: 'queue_query',
+    sql: `ALTER TABLE queue ADD COLUMN query TEXT;`,
+  },
 ];
