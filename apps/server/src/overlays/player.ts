@@ -19,6 +19,7 @@ interface YTPlayer {
   getCurrentTime(): number;
   getDuration(): number;
   getPlayerState(): number;
+  getVideoData?(): { video_id?: string };
 }
 declare global {
   interface Window {
@@ -40,6 +41,8 @@ let paused = false;
 let endedSent = -1;
 let blocked = false;
 let loadStartedAt = 0;
+/** 이 seq의 곡이 실제로 재생(PLAYING)된 적 있는지 — 이전 곡의 늦은 '끝남' 신호를 걸러내기 위함 */
+let playedSeq = -1;
 
 // ── YouTube 로딩 ──
 let ytMain: YTPlayer | null = null;
@@ -178,15 +181,31 @@ function stopAll() {
 }
 
 // ── 메인 플레이어 이벤트 ──
+/**
+ * YouTube 이벤트는 iframe에서 늦게 도착합니다. 스킵 직후 '이전 곡'의 끝남/오류 신호가
+ * 새 곡의 것으로 착각되면 곡이 연쇄로 넘어가므로, 지금 곡의 신호인지 반드시 확인합니다.
+ */
+function isCurrentVideo(): boolean {
+  if (current?.track.source !== 'youtube' || !ytMain) return false;
+  const id = ytMain.getVideoData?.()?.video_id;
+  return id ? id === current.track.ref : Date.now() - loadStartedAt > 1500;
+}
 function onMainState(e: { data: number }) {
-  if (e.data === YT_STATE.ENDED && current?.track.source === 'youtube') sendEnded();
-  if (e.data === YT_STATE.PLAYING) clearBlocked();
+  if (e.data === YT_STATE.PLAYING && isCurrentVideo()) {
+    playedSeq = seq;
+    clearBlocked();
+  }
+  // 실제로 재생된 적 있는 지금 곡만 '끝남'으로 인정
+  if (e.data === YT_STATE.ENDED && playedSeq === seq && isCurrentVideo()) sendEnded();
 }
 function onMainError(code: number) {
-  if (current?.track.source === 'youtube') conn.send({ type: 'player.error', seq, code });
+  if (isCurrentVideo()) conn.send({ type: 'player.error', seq, code });
 }
-audio.addEventListener('ended', () => current?.track.source === 'local' && sendEnded());
-audio.addEventListener('error', () => current?.track.source === 'local' && audio.getAttribute('src') && conn.send({ type: 'player.error', seq, code: 'media' }));
+const isCurrentAudio = () => current?.track.source === 'local' && audio.currentSrc.includes(`/media/${current.track.id}?`);
+audio.addEventListener('playing', () => isCurrentAudio() && (playedSeq = seq));
+audio.addEventListener('ended', () => isCurrentAudio() && playedSeq === seq && sendEnded());
+// src를 비울 때 나는 오류(이전 곡)는 무시
+audio.addEventListener('error', () => isCurrentAudio() && conn.send({ type: 'player.error', seq, code: 'media' }));
 audio.addEventListener('playing', clearBlocked);
 
 function sendEnded() {

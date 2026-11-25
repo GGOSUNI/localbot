@@ -388,6 +388,7 @@ describe('재생 엔진 — 장애 대응 (카오스)', () => {
     await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
     await svc.request({ videoId: V(2), viewer: viewer('b'), via: 'chat' });
     const oldSeq = p.lastPlay()!.seq;
+    p.hb(5);
     p.ended();
     svc.engine.report('p1', { type: 'player.ended', seq: oldSeq }); // 중복 ended
     expect(svc.engine.np?.track.ref).toBe(V(2));
@@ -703,4 +704,30 @@ test('가수 이름 정리', async () => {
   expect(artistKey(null, '아이유 - 밤편지')).toBe('아이유');
   expect(artistKey(null, '[MV] 화사 - Maria')).toBe('화사');
   expect(artistKey(null, '그냥 제목')).toBeNull();
+});
+
+test('스킵 직후 이전 곡의 늦은 "끝남" 신호로 다음 곡들이 연쇄로 넘어가지 않음', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lb-skip-'));
+  dirs.push(dir);
+  const db = openDatabase(join(dir, 'bot.db'), join(dir, 'backups'));
+  const svc = new SongService({
+    db, notify: () => {}, reply: () => {}, onChange: () => {}, search: async () => [], mix: async () => [],
+    oembed: async (id) => ({ ok: true, title: `곡 ${id}`, author: null }),
+  });
+  const p = player(svc);
+  for (const n of [1, 2, 3, 4]) await svc.request({ videoId: V(n), viewer: viewer(`v${n}`), via: 'chat' });
+  p.hb(10);
+  p.hb(11);
+  svc.skip(); // → V2 시작
+  // 플레이어가 이전 곡 정지 때문에 새 seq로 '끝남'을 잘못 보냄 (여러 번)
+  p.ended();
+  p.ended();
+  p.ended();
+  expect(svc.engine.np?.track.ref).toBe(V(2));
+  expect(svc.store.queued().map((q) => q.track.ref)).toEqual([V(3), V(4)]);
+  // 정상적으로 재생되다 끝나면 그때 다음 곡
+  p.hb(1);
+  p.hb(2);
+  p.ended();
+  expect(svc.engine.np?.track.ref).toBe(V(3));
 });

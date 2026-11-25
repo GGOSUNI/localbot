@@ -155,7 +155,14 @@ export class PlayerEngine {
       }
       return;
     }
-    if (r.type === 'player.ended') return this.finish('played', null);
+    if (r.type === 'player.ended') {
+      // 한 번도 진행된 적 없는 곡의 '끝남'은 이전 곡의 늦은 신호일 가능성 → 무시 (워치독이 따로 지켜봄)
+      if (this.lastProgressAt === null && !(this.np.duration && this.lastTime >= this.np.duration - 3)) {
+        log.warn(`ignoring premature 'ended' for "${this.np.track.title}" (no progress yet)`);
+        return;
+      }
+      return this.finish('played', null);
+    }
     if (r.type === 'player.error') return this.fail(`재생 오류 (${r.code})`, r.code);
   }
 
