@@ -13,9 +13,21 @@ export interface ConnectionState {
   error: string | null;
 }
 
+/** 치지직 공식 연결 (봇 채팅 답장) */
+export interface OfficialStatus {
+  configured: boolean;
+  loggedIn: boolean;
+  clientId: string | null;
+  channelId: string | null;
+  channelName: string | null;
+  redirectUri: string;
+  error: string | null;
+}
+
 /** 서버 → 대시보드 */
 export type ServerMessage =
-  | { type: 'hello'; workerStartedAt: number; recent: Envelope[]; connection: ConnectionState; songs: SongsState; roulette: RouletteState }
+  | { type: 'hello'; workerStartedAt: number; recent: Envelope[]; connection: ConnectionState; songs: SongsState; roulette: RouletteState; official: OfficialStatus }
+  | { type: 'official'; state: OfficialStatus }
   | { type: 'event'; envelope: Envelope }
   | { type: 'connection'; state: ConnectionState }
   | { type: 'songs'; state: SongsState }

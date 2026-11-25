@@ -1,7 +1,9 @@
 import { statSync } from 'node:fs';
 import { extname } from 'node:path';
-import type { ConnectionState, Envelope, OverlayMessage, OverlayReport, ServerMessage } from '@localbot/shared';
+import type { ConnectionState, Envelope, OfficialStatus, OverlayMessage, OverlayReport, ServerMessage } from '@localbot/shared';
 import type { ServerWebSocket } from 'bun';
+import type { ChzzkOfficial } from '../adapters/chzzk/official.ts';
+import { REDIRECT_PATH } from '../adapters/chzzk/official.ts';
 import type { MockAdapter } from '../adapters/mock.ts';
 import type { EventBus } from '../core/bus.ts';
 import { VERSION } from '../core/config.ts';
@@ -29,6 +31,8 @@ interface Deps {
   ingest: Ingest;
   mock: MockAdapter;
   connection: ChzzkConnection;
+  official: ChzzkOfficial;
+  onOfficialLogin: (channelId: string) => Promise<void>;
   songs: SongService;
   roulette: RouletteService;
   workerStartedAt: number;
@@ -39,6 +43,7 @@ interface Deps {
 export interface HttpHandle {
   stop(): void;
   broadcastConnection(state: ConnectionState): void;
+  broadcastOfficial(state: OfficialStatus): void;
   broadcastSongs(): void;
   broadcastRoulette(): void;
 }
@@ -96,6 +101,17 @@ export function startHttp(deps: Deps): HttpHandle {
     { method: 'GET', re: /^\/api\/connection$/, fn: () => deps.connection.state },
     { method: 'POST', re: /^\/api\/connection$/, fn: (_, b) => deps.connection.setChannel(String(b.input ?? '')) },
     { method: 'POST', re: /^\/api\/connection\/clear$/, fn: async () => (await deps.connection.clear(), ok) },
+    { method: 'GET', re: /^\/api\/official$/, fn: () => deps.official.status() },
+    { method: 'POST', re: /^\/api\/official\/config$/, fn: (_, b) => deps.official.configure(String(b.clientId ?? ''), String(b.clientSecret ?? '')) },
+    { method: 'POST', re: /^\/api\/official\/logout$/, fn: async () => (await deps.official.logout(), ok) },
+    { method: 'POST', re: /^\/api\/official\/forget$/, fn: () => (deps.official.forget(), ok) },
+    {
+      method: 'POST', re: /^\/api\/official\/test$/, fn: async (_, b) => {
+        if (!deps.official.canSend) return { ok: false, error: '먼저 치지직으로 로그인해 주세요' };
+        const sent = await deps.official.sendChat(String(b.message ?? '🤖 LocalBot 연결 테스트'));
+        return sent ? ok : { ok: false, error: deps.official.status().error ?? '전송 실패' };
+      },
+    },
     { method: 'POST', re: /^\/api\/app\/quit$/, fn: () => (setTimeout(deps.onQuitRequested, 50), ok) },
     { method: 'POST', re: /^\/api\/debug\/crash$/, fn: () => (setTimeout(deps.onCrashRequested, 50), { ok: true, crashing: process.pid }) },
     {
@@ -189,6 +205,17 @@ export function startHttp(deps: Deps): HttpHandle {
       }
       if (url.pathname === '/api/session') return json({ authed });
 
+      // 치지직 공식 로그인 콜백. localhost 주소로 돌아오므로 세션 쿠키 대신 1회용 state로 확인
+      if (url.pathname === REDIRECT_PATH) {
+        const r = await deps.official.handleCallback(url.searchParams.get('code'), url.searchParams.get('state'));
+        if (r.ok) await deps.onOfficialLogin(r.channelId).catch(() => {});
+        const msg = r.ok ? `✅ ${r.channelName} 채널로 로그인했습니다. 이제 봇이 채팅방에 답장합니다.` : `⚠️ ${r.error}`;
+        return new Response(
+          `<!doctype html><meta charset="utf-8"><title>LocalBot</title><body style="font-family:system-ui;background:#0f1115;color:#e7e9ee;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center"><h2>${escapeHtml(msg)}</h2><p><a style="color:#00d564" href="http://127.0.0.1:${deps.port}/#home">대시보드로 돌아가기</a></p></div><script>setTimeout(()=>location.href='http://127.0.0.1:${deps.port}/#home',${r.ok ? 1500 : 6000})</script>`,
+          { headers: { 'content-type': 'text/html; charset=utf-8' } },
+        );
+      }
+
       // 대시보드 로그인: ?key= → 세션 쿠키 → /
       if (url.pathname === '/login') {
         const key = url.searchParams.get('key') ?? '';
@@ -209,6 +236,11 @@ export function startHttp(deps: Deps): HttpHandle {
       }
 
       if (!authed) return json({ error: 'unauthorized' }, 401);
+
+      if (url.pathname === '/api/official/login' && req.method === 'GET') {
+        const to = deps.official.loginUrl();
+        return to ? Response.redirect(to, 302) : json({ error: '먼저 Client ID와 Secret을 저장해 주세요' }, 400);
+      }
 
       if (url.pathname === '/ws') {
         return srv.upgrade(req, { data: { kind: 'dashboard' } }) ? undefined : json({ error: 'upgrade failed' }, 400);
@@ -231,6 +263,7 @@ export function startHttp(deps: Deps): HttpHandle {
           const hello: ServerMessage = {
             type: 'hello', workerStartedAt: deps.workerStartedAt, recent: deps.ingest.recent(80),
             connection: deps.connection.state, songs: deps.songs.state(), roulette: deps.roulette.state(),
+            official: deps.official.status(),
           };
           ws.send(JSON.stringify(hello));
           return;
@@ -274,6 +307,7 @@ export function startHttp(deps: Deps): HttpHandle {
   return {
     stop: () => server.stop(true),
     broadcastConnection: (state) => toDash({ type: 'connection', state }),
+    broadcastOfficial: (state) => toDash({ type: 'official', state }),
     broadcastSongs,
     broadcastRoulette,
   };
@@ -308,4 +342,8 @@ function serveMedia(req: Request, path: string | null): Response {
     });
   }
   return new Response(file, { headers: { 'content-type': type, 'accept-ranges': 'bytes', 'content-length': String(size) } });
+}
+
+function escapeHtml(s: string) {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }

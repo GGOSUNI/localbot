@@ -1,6 +1,7 @@
 import type { Envelope } from '@localbot/shared';
 import { type FormEvent, useState } from 'react';
-import { type AppState, post, won } from './store.ts';
+import type { OfficialStatus } from '@localbot/shared';
+import { type AppState, post, toast, won } from './store.ts';
 
 const ROLE: Record<string, string> = { streamer: '스트리머', manager: '매니저', subscriber: '구독' };
 
@@ -8,6 +9,7 @@ export function Home({ app }: { app: AppState }) {
   return (
     <main>
       <Connection app={app} />
+      {app.connection?.channelId && app.official && <Official o={app.official} />}
       <div className="cols">
         <section>
           <h2>실시간 채팅 · 후원 · 봇</h2>
@@ -80,7 +82,9 @@ function Connection({ app }: { app: AppState }) {
         </div>
       )}
       <div className="muted small" style={{ marginTop: 6 }}>
-        읽기 전용 연결 — 채팅·후원·구독을 받습니다. 봇의 답장은 아래 목록에 🤖로 표시됩니다 (채팅방에 직접 쓰려면 공식 연결 필요, 준비 중).
+        {app.official?.loggedIn
+          ? `채팅·후원·구독을 받고, 봇 답장은 "${app.official.channelName}" 계정으로 채팅방에 올라갑니다.`
+          : '채팅·후원·구독을 받습니다. 봇 답장을 채팅방에 올리려면 아래 "봇 답장 켜기"를 설정하세요.'}
       </div>
     </section>
   );
@@ -167,5 +171,71 @@ function FeedItem({ env }: { env: Envelope }) {
       {body}
       {env.source === 'mock' && <span className="badge" style={{ marginLeft: 'auto' }}>테스트</span>}
     </li>
+  );
+}
+
+function Official({ o }: { o: OfficialStatus }) {
+  const [open, setOpen] = useState(!o.loggedIn && !o.configured);
+  const [id, setId] = useState(o.clientId ?? '');
+  const [secret, setSecret] = useState('');
+  const copy = (t: string) => navigator.clipboard?.writeText(t).then(() => toast('복사했습니다'), () => prompt('복사하세요', t));
+
+  if (o.loggedIn) {
+    return (
+      <section>
+        <div className="row">
+          <span className="badge ok">봇 답장 켜짐</span>
+          <span>🤖 <b>{o.channelName}</b> 계정으로 채팅방에 답장합니다.</span>
+          <span className="spacer" />
+          <button className="sm" onClick={async () => { const r = await post('/api/official/test', { message: '🤖 LocalBot 연결 테스트입니다' }); if (r.ok) toast('채팅방에 테스트 메시지를 보냈습니다'); }}>테스트 메시지</button>
+          <button className="sm ghost" onClick={() => confirm('봇 답장 로그인을 해제할까요?') && post('/api/official/logout')}>로그아웃</button>
+        </div>
+        {o.error && <div className="err">{o.error}</div>}
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <h2 style={{ cursor: 'pointer', marginBottom: open ? 12 : 0 }} onClick={() => setOpen(!open)}>
+        {open ? '▾' : '▸'} 🤖 봇 답장 켜기 <span className="muted small">(봇이 치지직 채팅방에 직접 답하게 — 처음 한 번만, 5분)</span>
+        <span className="spacer" />
+        {o.configured && <a href="/api/official/login" onClick={(e) => e.stopPropagation()}><button className="primary sm">치지직으로 로그인</button></a>}
+      </h2>
+      {open && (
+        <ol style={{ margin: 0, paddingLeft: 20, lineHeight: 1.9 }}>
+          <li>
+            <a href="https://developers.chzzk.naver.com" target="_blank" rel="noreferrer">치지직 개발자센터</a>에 로그인 → <b>애플리케이션 등록</b>
+            <div className="muted small">앱 이름에 "치지직", "chzzk", "네이버", "naver"는 넣을 수 없어요. 예) 누메드봇</div>
+          </li>
+          <li>
+            <b>로그인 리디렉션 URL</b>에 아래 주소를 그대로 넣기
+            <div className="row" style={{ margin: '4px 0' }}>
+              <code className="url grow">{o.redirectUri}</code>
+              <button className="sm" onClick={() => copy(o.redirectUri)}>복사</button>
+            </div>
+          </li>
+          <li><b>API 권한</b>에서 <b>유저 정보 조회</b>, <b>채팅 메시지 쓰기</b> 체크 → 등록</li>
+          <li>
+            발급된 <b>Client ID</b>와 <b>Client Secret</b>을 여기에 붙여넣고 저장
+            <div className="row" style={{ marginTop: 4 }}>
+              <input className="grow" placeholder="Client ID" value={id} onChange={(e) => setId(e.target.value)} />
+              <input className="grow" type="password" placeholder={o.configured ? 'Client Secret (저장됨 — 바꿀 때만 입력)' : 'Client Secret'} value={secret} onChange={(e) => setSecret(e.target.value)} />
+              <button className="primary" disabled={!id || (!secret && !o.configured)} onClick={async () => {
+                if (!secret) return toast('Client Secret을 넣어 주세요', true);
+                const r = await post('/api/official/config', { clientId: id, clientSecret: secret });
+                if (r.ok) { setSecret(''); toast('저장했습니다. 이제 "치지직으로 로그인"을 누르세요'); }
+              }}>저장</button>
+            </div>
+            <div className="muted small">Client Secret은 이 PC의 LocalBot에만 저장됩니다. 다른 곳(채팅·메신저)에 붙여넣지 마세요.</div>
+          </li>
+          <li>
+            <a href="/api/official/login"><button className="primary" disabled={!o.configured}>치지직으로 로그인</button></a>
+            <span className="muted small"> — 치지직 동의 화면에서 "동의"를 누르면 자동으로 돌아옵니다</span>
+          </li>
+        </ol>
+      )}
+      {o.error && <div className="err">{o.error}</div>}
+    </section>
   );
 }

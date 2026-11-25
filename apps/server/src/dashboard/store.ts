@@ -1,4 +1,4 @@
-import type { ConnectionState, Envelope, RouletteState, ServerMessage, SongsState } from '@localbot/shared';
+import type { ConnectionState, Envelope, OfficialStatus, RouletteState, ServerMessage, SongsState } from '@localbot/shared';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
 export interface AppState {
@@ -6,10 +6,11 @@ export interface AppState {
   connection: ConnectionState | null;
   songs: SongsState | null;
   roulette: RouletteState | null;
+  official: OfficialStatus | null;
   events: Envelope[];
 }
 
-let state: AppState = { server: 'connecting', connection: null, songs: null, roulette: null, events: [] };
+let state: AppState = { server: 'connecting', connection: null, songs: null, roulette: null, official: null, events: [] };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<AppState>) => {
   state = { ...state, ...patch };
@@ -35,7 +36,8 @@ export function startConnection() {
     };
     ws.onmessage = (e) => {
       const m = JSON.parse(String(e.data)) as ServerMessage;
-      if (m.type === 'hello') set({ connection: m.connection, songs: m.songs, roulette: m.roulette, events: m.recent.slice().reverse() });
+      if (m.type === 'hello') set({ connection: m.connection, songs: m.songs, roulette: m.roulette, official: m.official, events: m.recent.slice().reverse() });
+      else if (m.type === 'official') set({ official: m.state });
       else if (m.type === 'event') set({ events: [m.envelope, ...state.events].slice(0, 500) });
       else if (m.type === 'connection') set({ connection: m.state });
       else if (m.type === 'songs') set({ songs: m.state });

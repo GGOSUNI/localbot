@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import type { Envelope } from '@localbot/shared';
+import { ChzzkOfficial } from './adapters/chzzk/official.ts';
 import { MockAdapter } from './adapters/mock.ts';
 import { EventBus, envelope } from './core/bus.ts';
 import { config } from './core/config.ts';
@@ -52,14 +53,20 @@ export async function runWorker(): Promise<void> {
   await mock.start((env) => ingest.push(env));
   const connection = new ChzzkConnection(db, ingest, (s) => http?.broadcastConnection(s));
 
-  // 봇 응답: 보낼 수 있는 연결이면 채팅으로, 아니면 대시보드에만 표시
+  const official = new ChzzkOfficial(db, config.port, () => http?.broadcastOfficial(official.status()));
+
+  // 봇 응답: 공식 연결로 로그인돼 있으면 치지직 채팅방에, 아니면 대시보드에만 표시
   const reply = (text: string, origin?: Envelope) => {
-    let delivered = false;
     if (origin?.source === 'mock') {
       void mock.sendChat(text);
-      delivered = true;
+      ingest.push(envelope('system', { type: 'bot', text, delivered: true }));
+      return;
     }
-    ingest.push(envelope('system', { type: 'bot', text, delivered }));
+    if (official.canSend) {
+      void official.sendChat(text).then((ok) => ingest.push(envelope('system', { type: 'bot', text, delivered: ok })));
+      return;
+    }
+    ingest.push(envelope('system', { type: 'bot', text, delivered: false }));
   };
   const notify = (level: 'info' | 'warn', message: string) => ingest.push(envelope('system', { type: 'system', level, message }));
 
@@ -90,7 +97,11 @@ export async function runWorker(): Promise<void> {
         setSetting(db, 'overlay.key', overlayKey);
         return overlayKey;
       },
-      bus, ingest, mock, connection, songs, roulette,
+      bus, ingest, mock, connection, songs, roulette, official,
+      // 공식 로그인한 채널로 채팅·후원 수신도 맞춤
+      onOfficialLogin: async (channelId) => {
+        if (connection.state.channelId !== channelId) await connection.setChannel(channelId);
+      },
       workerStartedAt: startedAt,
       onCrashRequested: () => {
         log.warn('crash requested from dashboard');
