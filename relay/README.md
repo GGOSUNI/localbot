@@ -4,7 +4,7 @@
 치지직 앱의 Client Secret은 이 서버에만 있고(사용자 exe에는 없음), 서버는 아무것도 저장하지 않습니다.
 
 ## 배포 (개발자가 처음 한 번만, 무료)
-Windows: **`배포.bat` 더블클릭** → 안내대로 진행.
+Windows: **`deploy.bat` 더블클릭** (Node.js 필요) · Node 없이: `browser-deploy.txt` 따라 브라우저에서 → 안내대로 진행.
 
 직접 하려면:
 ```bash
