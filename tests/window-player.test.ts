@@ -13,6 +13,19 @@ const CHROME = '/opt/pw-browsers/chromium';
 const hasChrome = await Bun.file(CHROME).exists().catch(() => false);
 let dir: string;
 let server: ReturnType<typeof Bun.serve>;
+let pageState: Record<string, string> | null = null;
+
+/** JPEG 크기 읽기 (SOF 마커) */
+function jpegSize(b64: string) {
+  const b = Buffer.from(b64, 'base64');
+  for (let i = 2; i < b.length - 9; ) {
+    if (b[i] !== 0xff) return null;
+    const m = b[i + 1]!, len = b.readUInt16BE(i + 2);
+    if (m >= 0xc0 && m <= 0xc3) return { h: b.readUInt16BE(i + 5), w: b.readUInt16BE(i + 7) };
+    i += 2 + len;
+  }
+  return null;
+}
 
 function wav(seconds: number) {
   const rate = 8000, n = rate * seconds;
@@ -27,11 +40,35 @@ function wav(seconds: number) {
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'lb-win-'));
   writeFileSync(join(dir, 'a.wav'), wav(4));
+  writeFileSync(join(dir, 'ad.wav'), wav(30)); // 30초짜리 못 건너뛰는 광고
   server = Bun.serve({
     port: 0, hostname: '127.0.0.1',
     fetch(req) {
       const u = new URL(req.url);
-      if (u.pathname === '/a.wav') return new Response(Bun.file(join(dir, 'a.wav')), { headers: { 'content-type': 'audio/wav' } });
+      if (u.pathname === '/a.wav' || u.pathname === '/ad.wav') return new Response(Bun.file(join(dir, u.pathname.slice(1))), { headers: { 'content-type': 'audio/wav' } });
+      if (u.pathname === '/state') {
+        pageState = Object.fromEntries(u.searchParams);
+        return new Response('ok');
+      }
+      if (u.pathname === '/watch' && u.searchParams.get('v') === 'adtest12345') {
+        // 유튜브처럼: 광고 중엔 #movie_player에 ad-showing, 광고가 끝나면 같은 video로 본편 재생
+        return new Response(`<!doctype html><title>fake yt</title>
+          <div id="movie_player" class="html5-video-player ad-showing">
+            <div class="html5-video-container"><video class="html5-main-video" src="/ad.wav" autoplay></video></div>
+            <div class="ytp-chrome-bottom" style="width:300px;height:40px;background:red">controls</div>
+            <button class="ytp-ad-skip-button-modern" onclick="window.__skip=(window.__skip||0)+1">광고 건너뛰기</button>
+          </div>
+          <script>
+            const v = document.querySelector('video'), p = document.getElementById('movie_player');
+            let adMuted = false, adSound = false;
+            setInterval(() => { if (p.classList.contains('ad-showing') && !v.paused) { if (v.muted) adMuted = true; else if (v.currentTime > 0.5) adSound = true; } }, 20);
+            v.addEventListener('ended', () => {
+              if (!p.classList.contains('ad-showing')) return;
+              p.classList.remove('ad-showing'); v.src = '/a.wav'; v.play();
+              setTimeout(() => fetch('/state?adMuted=' + adMuted + '&adSound=' + adSound + '&skip=' + (window.__skip || 0) + '&muted=' + v.muted + '&rate=' + v.playbackRate + '&ctrl=' + getComputedStyle(document.querySelector('.ytp-chrome-bottom')).opacity), 600);
+            });
+          </script>`, { headers: { 'content-type': 'text/html' } });
+      }
       if (u.pathname === '/watch') {
         const t = Number((u.searchParams.get('t') ?? '0').replace('s', '')) || 0;
         const bad = u.searchParams.get('v') === 'brokenvideo';
@@ -81,6 +118,32 @@ describe.skipIf(!hasChrome)('유튜브 창 플레이어 (실제 크로미움)', 
     wp.send({ op: 'play', seq: 10, position: 0, volume: 50, paused: false, track: { id: 3, source: 'youtube', ref: 'brokenvideo', title: 'z' } });
     for (let i = 0; i < 30 && !reports.some((r) => r.type === 'player.error'); i++) await Bun.sleep(250);
     expect(reports.some((r) => r.type === 'player.error' && r.seq === 10)).toBe(true);
+    await wp.shutdown();
+  }, 30_000);
+
+  test('광고: 소리 끄고 끝으로 감아서 바로 본편 → 본편은 소리 켜고 정상 속도, 대시보드 화면은 16:9', async () => {
+    const reports: PlayerReport[] = [];
+    const frames: string[] = [];
+    const wp = new WindowPlayer({
+      dataDir: join(dir, 'ad'), debugPort: 9336, enabled: () => true, report: (r) => reports.push(r), onFrame: (j) => frames.push(j),
+      browserPath: CHROME, watchBase: `http://127.0.0.1:${server.port}/watch`, extraArgs: ['--headless=new', '--no-sandbox', '--mute-audio'],
+    });
+    const started = Date.now();
+    wp.send({ op: 'play', seq: 1, position: 0, volume: 50, paused: false, track: { id: 9, source: 'youtube', ref: 'adtest12345', title: 'ad' } });
+    for (let i = 0; i < 60 && !pageState; i++) await Bun.sleep(200);
+    expect(pageState).not.toBeNull();
+    expect(Date.now() - started).toBeLessThan(10_000); // 30초 광고를 기다리지 않음
+    expect(pageState!.adMuted).toBe('true'); // 광고 소리 꺼짐
+    expect(pageState!.adSound).toBe('false'); // 광고 소리가 난 적 없음
+    expect(Number(pageState!.skip)).toBeGreaterThan(0); // 건너뛰기 버튼도 누름
+    expect(pageState!.muted).toBe('false'); // 본편은 소리 켬
+    expect(pageState!.rate).toBe('1'); // 본편은 정상 속도
+    expect(pageState!.ctrl).toBe('0'); // 컨트롤 바는 화면에 안 보임
+    for (let i = 0; i < 20 && !reports.some((r) => r.type === 'player.hb' && r.state === 'playing'); i++) await Bun.sleep(250);
+    expect(reports.some((r) => r.type === 'player.hb' && r.state === 'playing')).toBe(true);
+    for (let i = 0; i < 20 && !frames.length; i++) await Bun.sleep(250);
+    expect(frames.length).toBeGreaterThan(0);
+    expect(jpegSize(frames.at(-1)!)).toEqual({ w: 640, h: 360 });
     await wp.shutdown();
   }, 30_000);
 

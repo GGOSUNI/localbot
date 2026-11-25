@@ -3,7 +3,7 @@ import type { OverlayMessage, TtsItem, TtsState, Viewer } from '@localbot/shared
 import { getSetting, setSetting } from '../../core/db.ts';
 import { createLogger } from '../../core/logger.ts';
 import type { Speaker } from './speaker.ts';
-import { cleanMessage, DEFAULT_TTS, sanitizeTts, speechFor, type TtsSettings } from './text.ts';
+import { cleanMessage, DEFAULT_TTS, OLD_DEFAULT_TEMPLATES, sanitizeTts, speechFor, type TtsSettings } from './text.ts';
 
 const log = createLogger('tts');
 const KEY = 'tts.settings';
@@ -36,7 +36,9 @@ export class TtsService {
   }
 
   settings(): TtsSettings {
-    return { ...DEFAULT_TTS, ...getSetting<Partial<TtsSettings>>(this.db, KEY, {}) };
+    const saved = getSetting<Partial<TtsSettings>>(this.db, KEY, {});
+    if (saved.template && OLD_DEFAULT_TEMPLATES.includes(saved.template)) delete saved.template;
+    return { ...DEFAULT_TTS, ...saved };
   }
   setSettings(p: Partial<TtsSettings>) {
     const next = { ...this.settings(), ...sanitizeTts(p) };
@@ -100,10 +102,13 @@ export class TtsService {
       this.speaking = item;
       this.hooks.onChange();
       for (const send of this.overlays.values()) send({ type: 'alert.show', alert: item });
-      if (s.duck) this.hooks.duck(true);
+      const duck = s.duck && !!item.speech; // 읽을 메시지가 없으면 노래도 안 줄임
+      if (duck) this.hooks.duck(true);
       try {
-        await Bun.sleep(400); // 노래 소리가 줄어든 뒤 읽기
-        if (!this.skipPending && this.speaker.available) {
+        if (duck) await Bun.sleep(400); // 노래 소리가 줄어든 뒤 읽기
+        if (!item.speech) {
+          await Bun.sleep(3000); // 메시지 없는 후원: 읽을 게 없으니 알림 카드만
+        } else if (!this.skipPending && this.speaker.available) {
           const h = this.speaker.speak(item.speech, { voice: s.voice, rate: s.rate, volume: s.volume });
           this.cancel = h.cancel;
           await h.done;
@@ -115,7 +120,7 @@ export class TtsService {
       } finally {
         this.cancel = null;
         this.skipPending = false;
-        if (s.duck) this.hooks.duck(false);
+        if (duck) this.hooks.duck(false);
         for (const send of this.overlays.values()) send({ type: 'alert.hide', id: item.id });
         this.speaking = null;
         this.hooks.onChange();

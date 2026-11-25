@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OverlayMessage, Viewer } from '@localbot/shared';
-import { openDatabase } from '../apps/server/src/core/db.ts';
+import { openDatabase, setSetting } from '../apps/server/src/core/db.ts';
 import { TtsService } from '../apps/server/src/modules/tts/service.ts';
 import type { Speaker } from '../apps/server/src/modules/tts/speaker.ts';
 import { cleanMessage, DEFAULT_TTS, sanitizeTts, speechFor } from '../apps/server/src/modules/tts/text.ts';
@@ -18,10 +18,13 @@ describe('읽을 문장 만들기', () => {
     expect(cleanMessage('바보야 바보', { maxChars: 80, bannedWords: ['바보'] })).toBe('삐야 삐');
     expect(cleanMessage('가나다라마바사', { maxChars: 5, bannedWords: [] })).toBe('가나다라마');
   });
-  test('템플릿 · 익명 · 명령어 메시지는 안 읽음', () => {
-    expect(speechFor({ nickname: '꼬순이', amountKRW: 5000, text: '방송 재밌어요' }, DEFAULT_TTS)).toBe('꼬순이님 5000원 후원. 방송 재밌어요');
-    expect(speechFor({ nickname: null, amountKRW: 1000, text: '' }, DEFAULT_TTS)).toBe('익명님 1000원 후원.');
-    expect(speechFor({ nickname: 'a', amountKRW: 1000, text: '!신청곡 아이유 밤편지' }, DEFAULT_TTS)).toBe('a님 1000원 후원.');
+  test('기본: 메시지만 읽음 · 명령어 메시지는 안 읽음 · 템플릿으로 닉네임/금액 추가 가능', () => {
+    expect(speechFor({ nickname: '꼬순이', amountKRW: 5000, text: '방송 재밌어요' }, DEFAULT_TTS)).toBe('방송 재밌어요');
+    expect(speechFor({ nickname: null, amountKRW: 1000, text: '' }, DEFAULT_TTS)).toBe('');
+    expect(speechFor({ nickname: 'a', amountKRW: 1000, text: '!신청곡 아이유 밤편지' }, DEFAULT_TTS)).toBe('');
+    const t = { ...DEFAULT_TTS, template: '{user}님 {amount}원. {message}' };
+    expect(speechFor({ nickname: '꼬순이', amountKRW: 5000, text: '안녕' }, t)).toBe('꼬순이님 5000원. 안녕');
+    expect(speechFor({ nickname: null, amountKRW: 1000, text: '' }, t)).toBe('익명님 1000원.');
   });
   test('설정값 정리', () => {
     expect(sanitizeTts({ rate: 99, volume: -5, maxChars: 1, minAmountKRW: 'x' as unknown as number, template: '' })).toEqual({
@@ -76,7 +79,7 @@ describe('후원 TTS 대기열', () => {
     tts.onDonation(viewer('가'), 1000, '첫번째');
     tts.onDonation(viewer('나'), 2000, '두번째');
     await until(() => speaker.spoken.length === 1);
-    expect(speaker.spoken[0]).toBe('가님 1000원 후원. 첫번째');
+    expect(speaker.spoken[0]).toBe('첫번째');
     expect(tts.state().queue.length).toBe(1);
     expect(ducks).toEqual([true]);
     expect(overlay[0]).toMatchObject({ type: 'alert.show', alert: { nickname: '가', amountKRW: 1000 } });
@@ -110,7 +113,7 @@ describe('후원 TTS 대기열', () => {
     tts.skip(); // 노래 줄이는 중(말하기 전)에 건너뛰기 → 안 읽고 넘어감
     tts.onDonation(viewer('b'), 1000, '2');
     await until(() => speaker.spoken.length === 1);
-    expect(speaker.spoken[0]).toContain('b님');
+    expect(speaker.spoken[0]).toBe('2');
     tts.skip(); // 읽는 중 건너뛰기
     expect(speaker.cancelled).toBe(1);
     tts.onDonation(viewer('c'), 1000, '3');
@@ -121,6 +124,26 @@ describe('후원 TTS 대기열', () => {
     await Bun.sleep(500);
     expect(speaker.spoken.length).toBe(2); // d는 안 읽힘
     expect(ducks.filter((d) => d).length).toBe(ducks.filter((d) => !d).length); // 소리 줄인 만큼 되돌림
+  });
+
+  test('메시지 없는 후원은 안 읽고 노래도 안 줄임 (카드만)', async () => {
+    const { speaker, ducks, tts } = setup();
+    const overlay: OverlayMessage[] = [];
+    tts.addOverlay('o', (m) => overlay.push(m));
+    tts.onDonation(viewer('a'), 1000, '');
+    tts.onDonation(viewer('b'), 1000, '읽어줘');
+    await until(() => speaker.spoken.length === 1, 6000);
+    expect(speaker.spoken).toEqual(['읽어줘']);
+    expect(ducks).toEqual([true]);
+    expect(overlay[0]).toMatchObject({ type: 'alert.show', alert: { nickname: 'a' } });
+  });
+
+  test('예전 기본 문장(닉네임님 금액원 후원)이 저장돼 있으면 메시지만 읽기로 바뀜', () => {
+    const { db } = setup();
+    setSetting(db, 'tts.settings', { ...DEFAULT_TTS, template: '{user}님 {amount}원 후원. {message}', minAmountKRW: 3000 });
+    const t = new TtsService(db, new FakeSpeaker(), { duck: () => {}, onChange: () => {} });
+    expect(t.settings().template).toBe('{message}');
+    expect(t.settings().minAmountKRW).toBe(3000);
   });
 
   test('설정은 DB에 저장', () => {

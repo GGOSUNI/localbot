@@ -57,7 +57,7 @@ export function TtsPage({ t }: { t: TtsState }) {
               <span className="muted small">{won(s.minAmountKRW)} 이상 후원만 읽음</span>
             </label>
             <label className="field col">
-              <span>읽는 문장 <span className="muted small">{'{user}'} 닉네임 · {'{amount}'} 금액 · {'{message}'} 메시지</span></span>
+              <span>읽는 문장 <span className="muted small">기본은 후원 메시지만 읽음 · 원하면 {'{user}'} 닉네임 · {'{amount}'} 금액 추가</span></span>
               <div className="row">
                 <input className="grow" value={template} onChange={(e) => setTemplate(e.target.value)} />
                 <button disabled={template === s.template} onClick={() => save({ template })}>저장</button>

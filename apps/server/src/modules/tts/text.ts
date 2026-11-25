@@ -3,10 +3,14 @@ import type { TtsSettings } from '@localbot/shared';
 
 export type { TtsSettings };
 
+/** 예전 기본값 — 저장돼 있으면 새 기본값(메시지만)으로 바꿔 줌 */
+export const OLD_DEFAULT_TEMPLATES = ['{user}님 {amount}원 후원. {message}'];
+
 export const DEFAULT_TTS: TtsSettings = {
   enabled: true,
   minAmountKRW: 1000,
-  template: '{user}님 {amount}원 후원. {message}',
+  // 후원 메시지만 읽음 (닉네임·금액 안내 없음)
+  template: '{message}',
   maxChars: 80,
   voice: '',
   rate: 0,

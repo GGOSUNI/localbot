@@ -111,6 +111,52 @@ class Cdp {
   }
 }
 
+/**
+ * 모든 페이지에 미리 심는 스크립트 (페이지 안에서 0.1초마다 돎)
+ * - 영상만 화면 가득 (컨트롤·추천·팝업 숨김) → 대시보드에 깔끔하게
+ * - 광고: 소리 끄고, 건너뛰기 버튼 누르고, 못 건너뛰는 광고는 끝으로 감기
+ * - "계속 시청하시겠습니까?" 같은 확인 창 자동으로 닫기
+ */
+export const PAGE_SCRIPT = `(() => {
+  if (window.__lb) return; window.__lb = 1;
+  const CSS = 'html,body{overflow:hidden!important;background:#000!important}'
+    + '#movie_player{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483647!important;background:#000!important}'
+    + '#movie_player .html5-video-container{position:absolute!important;inset:0!important;width:100%!important;height:100%!important}'
+    + '#movie_player video{position:absolute!important;left:0!important;top:0!important;width:100%!important;height:100%!important;object-fit:contain!important}'
+    + '#movie_player>:not(.html5-video-container):not(.ytp-error):not(.ytp-cued-thumbnail-overlay){opacity:0!important;pointer-events:none!important}'
+    + '#movie_player.ad-showing video{opacity:0!important}'
+    + 'ytd-popup-container,tp-yt-iron-overlay-backdrop,#masthead-container,ytd-mealbar-promo-renderer{opacity:0!important;pointer-events:none!important}';
+  const SKIP = '.ytp-skip-ad-button,.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-ad-skip-button-container button,.ytp-ad-overlay-close-button';
+  const DISMISS = 'yt-confirm-dialog-renderer #confirm-button button,yt-confirm-dialog-renderer #confirm-button,ytd-mealbar-promo-renderer #dismiss-button button,tp-yt-paper-dialog #dismiss-button button';
+  let wasAd = false;
+  const check = () => {
+    if (!document.getElementById('lb-style') && (document.head || document.documentElement)) {
+      const st = document.createElement('style'); st.id = 'lb-style'; st.textContent = CSS;
+      (document.head || document.documentElement).appendChild(st);
+    }
+    const p = document.querySelector('#movie_player');
+    if (!p) return;
+    const v = p.querySelector('video') || document.querySelector('video');
+    const ad = p.classList.contains('ad-showing') || p.classList.contains('ad-interrupting');
+    document.querySelectorAll(SKIP).forEach((b) => { try { b.click(); } catch {} });
+    document.querySelectorAll(DISMISS).forEach((b) => { try { b.click(); } catch {} });
+    if (ad && v) {
+      wasAd = true;
+      v.muted = true;
+      try { v.playbackRate = 16; } catch {}
+      try { if (isFinite(v.duration) && v.duration > 0.5 && v.currentTime < v.duration - 0.3) v.currentTime = v.duration - 0.1; } catch {}
+      if (v.paused) v.play().catch(() => {});
+    } else if (wasAd && v) {
+      wasAd = false;
+      v.muted = false;
+      try { v.playbackRate = 1; } catch {}
+    }
+  };
+  setInterval(check, 100);
+  document.addEventListener('playing', check, true);
+  document.addEventListener('loadedmetadata', check, true);
+})();`;
+
 interface PageState {
   vid: string | null;
   href: string;
@@ -205,7 +251,16 @@ export class WindowPlayer {
 
   // ── 내부 ──
 
+  /** 숨겨져 있을 땐 화면을 정확히 640×360(16:9)으로 → 대시보드 영상이 안 잘리고 안 찌그러짐 */
+  private async applyViewport() {
+    const cdp = this.cdp;
+    if (!cdp || cdp.closed) return;
+    if (this.visible) await cdp.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+    else await cdp.send('Emulation.setDeviceMetricsOverride', { width: 640, height: 360, deviceScaleFactor: 1, mobile: false }).catch(() => {});
+  }
+
   private async applyVisibility() {
+    await this.applyViewport();
     const port = this.o.debugPort;
     try {
       const ver = (await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1500) }).then((r) => r.json())) as { webSocketDebuggerUrl?: string };
@@ -233,12 +288,12 @@ export class WindowPlayer {
     cdp.on('Page.screencastFrame', (p: { data: string; sessionId: number }) => {
       void cdp.send('Page.screencastFrameAck', { sessionId: p.sessionId }).catch(() => {});
       const now = Date.now();
-      if (now - this.lastFrameAt < 250 || !this.current) return;
+      if (now - this.lastFrameAt < 80 || !this.current) return; // 최대 약 12프레임
       if (!this.lastFrameAt) log.info('screencast frames flowing');
       this.lastFrameAt = now;
       this.o.onFrame?.(p.data);
     });
-    void cdp.send('Page.startScreencast', { format: 'jpeg', quality: 55, maxWidth: 640, maxHeight: 360 }).catch(() => {});
+    void cdp.send('Page.startScreencast', { format: 'jpeg', quality: 70, maxWidth: 640, maxHeight: 360, everyNthFrame: 1 }).catch(() => {});
   }
 
   private setStatus(s: Status) {
@@ -323,24 +378,18 @@ export class WindowPlayer {
     if (!cdp || cdp.closed) return null;
     const expr = `(() => {
       document.title = ${JSON.stringify(WINDOW_TITLE)};
-      if (!document.getElementById('lb-style')) {
-        const st = document.createElement('style'); st.id = 'lb-style';
-        st.textContent = '#movie_player{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;z-index:2147483647!important;background:#000!important}'
-          + '#movie_player video{width:100vw!important;height:100vh!important;left:0!important;top:0!important;object-fit:contain!important}'
-          + 'html,body{overflow:hidden!important;background:#000!important}';
-        (document.head || document.documentElement).appendChild(st);
-      }
+      ${PAGE_SCRIPT}
       const p = document.querySelector('#movie_player');
       const v = document.querySelector('video.html5-main-video') || document.querySelector('video');
       let vid = null; try { vid = new URL(location.href).searchParams.get('v'); } catch {}
-      const ad = !!(p && p.classList.contains('ad-showing'));
+      const ad = !!(p && (p.classList.contains('ad-showing') || p.classList.contains('ad-interrupting')));
       const e = document.querySelector('.ytp-error');
       const err = e && e.offsetParent !== null ? (e.innerText || 'error').slice(0, 120) : null;
       const an = document.querySelector('.ytp-autonav-toggle-button[aria-checked="true"]'); if (an) an.click();
       if (v) {
         v.volume = ${this.volume / 100};
-        if (${this.paused} && !v.paused) v.pause();
-        if (!${this.paused} && v.paused && !v.ended) v.play().catch(() => {});
+        if (!ad && ${this.paused} && !v.paused) v.pause();
+        if ((ad || !${this.paused}) && v.paused && !v.ended) v.play().catch(() => {});
       }
       return { vid, href: location.href, ready: !!v && v.readyState >= 2, ad, err, t: v ? v.currentTime : 0,
                d: v && isFinite(v.duration) ? v.duration : null, paused: v ? v.paused : true, ended: v ? v.ended : false };
@@ -381,6 +430,7 @@ export class WindowPlayer {
               '--disable-backgrounding-occluded-windows',
               '--disable-renderer-backgrounding',
               '--disable-background-timer-throttling',
+              '--disable-features=CalculateNativeWinOcclusion',
               ...(this.o.extraArgs ?? []),
               '--app=about:blank',
             ],
@@ -402,7 +452,9 @@ export class WindowPlayer {
       try {
         const cdp = await Cdp.connect(page);
         await cdp.send('Page.enable').catch(() => {});
+        await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: PAGE_SCRIPT }).catch(() => {});
         this.cdp = cdp;
+        await this.applyViewport();
         this.startScreencast(cdp);
         void this.applyVisibility();
         return cdp;
