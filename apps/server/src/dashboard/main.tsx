@@ -4,12 +4,14 @@ import { Home } from './Home.tsx';
 import { Overlays } from './Overlays.tsx';
 import { RoulettePage } from './Roulette.tsx';
 import { Songs } from './Songs.tsx';
+import { TtsPage } from './Tts.tsx';
 import { markQuitting, post, startConnection, useApp, useToast } from './store.ts';
 
 const TABS = [
   ['home', '홈'],
   ['songs', '🎵 신청곡'],
   ['roulette', '🎰 룰렛'],
+  ['tts', '🔊 TTS'],
   ['overlays', '📺 OBS 설정'],
 ] as const;
 type Tab = (typeof TABS)[number][0];
@@ -60,6 +62,7 @@ function App() {
         tab === 'home' ? <Home app={app} /> :
         tab === 'songs' ? <Songs s={app.songs} /> :
         tab === 'roulette' ? <RoulettePage r={app.roulette} /> :
+        tab === 'tts' ? (app.tts ? <TtsPage t={app.tts} /> : <main><div className="empty">불러오는 중…</div></main>) :
         <Overlays app={app} />
       ) : <main><div className="empty">불러오는 중…</div></main>}
       {t && <div className={`toast ${t.bad ? 'bad' : ''}`}>{t.text}</div>}

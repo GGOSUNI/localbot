@@ -798,6 +798,20 @@ describe('유튜브 창 하나로만 재생 (기본 모드)', () => {
     expect(obs.filter((m) => m.type === 'player.cmd' && m.cmd.op === 'play')).toHaveLength(0);
   });
 
+  test('TTS 읽는 동안 노래 소리 30%로 줄였다가 원래대로 (저장된 볼륨은 그대로)', async () => {
+    const { svc, cmds } = setupWin();
+    svc.engine.setVolume(80);
+    await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
+    svc.engine.setDuck(true);
+    expect(cmds.at(-1)).toEqual({ op: 'volume', volume: 24 });
+    await svc.request({ videoId: V(2), viewer: viewer('b'), via: 'chat' });
+    svc.skip();
+    expect(cmds.filter((c) => c.op === 'play').at(-1)).toMatchObject({ volume: 24 }); // 읽는 중 넘어간 곡도 작게
+    svc.engine.setDuck(false);
+    expect(cmds.at(-1)).toEqual({ op: 'volume', volume: 80 });
+    expect(svc.state().volume).toBe(80);
+  });
+
   test('광고가 길어도 멈춘 걸로 치지 않음', async () => {
     const { svc, seq, report } = setupWin();
     await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });

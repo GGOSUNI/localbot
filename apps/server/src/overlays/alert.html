@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>LocalBot 후원 알림</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; font-family: "Pretendard", "Malgun Gothic", system-ui, sans-serif; }
+  #card { position: absolute; left: 50%; top: 18%; transform: translate(-50%, -30px) scale(.9); opacity: 0;
+          transition: all .45s cubic-bezier(.2,1.4,.4,1); min-width: 420px; max-width: 80vw; text-align: center;
+          background: rgba(15,17,21,.88); border: 3px solid #ffd84d; border-radius: 18px; padding: 18px 28px; color: #fff;
+          box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  #card.show { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  #who { font-size: 30px; font-weight: 900; }
+  #who b { color: #ffd84d; }
+  #msg { font-size: 22px; margin-top: 8px; word-break: break-all; color: #e7e9ee; }
+</style>
+</head>
+<body>
+<div id="card"><div id="who"></div><div id="msg"></div></div>
+<script type="module" src="./alert.ts"></script>
+</body>
+</html>

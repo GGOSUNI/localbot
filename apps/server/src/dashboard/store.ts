@@ -1,4 +1,4 @@
-import type { ConnectionState, Envelope, OfficialStatus, RouletteState, ServerMessage, SongsState } from '@localbot/shared';
+import type { ConnectionState, Envelope, OfficialStatus, RouletteState, ServerMessage, SongsState, TtsState } from '@localbot/shared';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 
 export interface AppState {
@@ -7,10 +7,11 @@ export interface AppState {
   songs: SongsState | null;
   roulette: RouletteState | null;
   official: OfficialStatus | null;
+  tts: TtsState | null;
   events: Envelope[];
 }
 
-let state: AppState = { server: 'connecting', connection: null, songs: null, roulette: null, official: null, events: [] };
+let state: AppState = { server: 'connecting', connection: null, songs: null, roulette: null, official: null, tts: null, events: [] };
 const listeners = new Set<() => void>();
 const set = (patch: Partial<AppState>) => {
   state = { ...state, ...patch };
@@ -38,6 +39,7 @@ export function startConnection() {
       const m = JSON.parse(String(e.data)) as ServerMessage;
       if (m.type === 'hello') set({ connection: m.connection, songs: m.songs, roulette: m.roulette, official: m.official, events: m.recent.slice().reverse() });
       else if (m.type === 'official') set({ official: m.state });
+      else if (m.type === 'tts') set({ tts: m.state });
       else if (m.type === 'frame') {
         frame = { jpeg: m.jpeg, at: Date.now() };
         frameListeners.forEach((l) => l());

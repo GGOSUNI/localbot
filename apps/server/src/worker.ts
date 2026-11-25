@@ -16,6 +16,8 @@ import { registerSongCommands } from './modules/songs/commands.ts';
 import { SongService } from './modules/songs/service.ts';
 import { WINDOW_ID } from './modules/songs/engine.ts';
 import { WindowPlayer } from './modules/songs/window-player.ts';
+import { TtsService } from './modules/tts/service.ts';
+import { WindowsSpeaker } from './modules/tts/speaker.ts';
 import { ensureDashboardKey } from './supervisor.ts';
 
 const log = createLogger('worker');
@@ -88,16 +90,25 @@ export async function runWorker(): Promise<void> {
   });
   songs.attachWindowPlayer(ytWindow);
 
+  const tts = new TtsService(db, new WindowsSpeaker(), {
+    duck: (on) => songs.engine.setDuck(on),
+    onChange: () => http?.broadcastTts(),
+  });
+
   const roulette = new RouletteService({ db, reply: (t) => reply(t), onChange: () => http?.broadcastRoulette() });
 
   const commands = new CommandRouter(reply);
   registerSongCommands(commands, songs);
+  commands.register(['!tts스킵', '!티티에스스킵'], () => tts.skip(), { managerOnly: true });
+  commands.register(['!tts끄기'], ({ reply }) => (tts.setSettings({ enabled: false }), reply('🔇 후원 TTS를 껐습니다')), { managerOnly: true });
+  commands.register(['!tts켜기'], ({ reply }) => (tts.setSettings({ enabled: true }), reply('🔊 후원 TTS를 켰습니다')), { managerOnly: true });
 
   bus.on(async (env) => {
     const e = env.event;
     if (e.type === 'chat') await commands.handle(env);
     if (e.type === 'donation') {
       roulette.onDonation(e.viewer, e.amountKRW);
+      tts.onDonation(e.viewer, e.amountKRW, e.text);
       await songs.onDonation(e.viewer, e.amountKRW, e.text);
     }
     if (e.type === 'stream' && e.state === 'online') backup(db, backupDir, 'stream-start');
@@ -114,7 +125,7 @@ export async function runWorker(): Promise<void> {
         setSetting(db, 'overlay.key', overlayKey);
         return overlayKey;
       },
-      bus, ingest, mock, connection, songs, roulette, official, ytWindow,
+      bus, ingest, mock, connection, songs, roulette, official, ytWindow, tts,
       // 공식 로그인한 채널로 채팅·후원 수신도 맞춤
       onOfficialLogin: async (channelId) => {
         if (connection.state.channelId !== channelId) await connection.setChannel(channelId);
@@ -141,6 +152,7 @@ export async function runWorker(): Promise<void> {
 
   function shutdown() {
     log.info('shutting down');
+    tts.clear();
     songs.stop();
     void ytWindow.shutdown();
     http?.stop();

@@ -105,3 +105,13 @@ button.sm { padding: 3px 8px; font-size: 12px; }
 code.url { display: block; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; font-size: 12px; word-break: break-all; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line); padding: 10px 18px; border-radius: 10px; z-index: 50; box-shadow: 0 8px 30px rgba(0,0,0,.4); }
 .toast.bad { border-color: var(--err); color: var(--err); }
+
+/* TTS */
+.field { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.field > span:first-child { min-width: 110px; font-weight: 600; }
+.field.col { display: grid; gap: 6px; }
+.field input[type=number] { width: 110px; text-align: right; }
+.field input[type=range] { flex: 1; min-width: 120px; }
+.field select { flex: 1; min-width: 160px; }
+.ttsnow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 12px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
+.ttsnow .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

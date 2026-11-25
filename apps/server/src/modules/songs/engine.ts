@@ -82,6 +82,18 @@ export class PlayerEngine {
   private lastPersist = 0;
   private prefetching: number | null = null;
   private window: WindowPlayerLike | null = null;
+  /** TTS 읽는 동안 노래 소리 줄이기 */
+  private ducked = false;
+  private get outVolume() {
+    return this.ducked ? Math.round(this.volume * 0.3) : this.volume;
+  }
+  setDuck(on: boolean) {
+    if (this.ducked === on) return;
+    this.ducked = on;
+    const cmd: PlayerCommand = { op: 'volume', volume: this.outVolume };
+    for (const p of this.players) p.send({ type: 'player.cmd', cmd });
+    this.window?.send(cmd);
+  }
   /** 지금 곡을 내는 플레이어 (마스터 id 또는 WINDOW_ID) */
   private route: string | null = null;
 
@@ -300,8 +312,8 @@ export class PlayerEngine {
 
   setVolume(v: number) {
     this.volume = Math.max(0, Math.min(100, Math.round(v)));
-    for (const p of this.players) p.send({ type: 'player.cmd', cmd: { op: 'volume', volume: this.volume } });
-    this.window?.send({ op: 'volume', volume: this.volume });
+    for (const p of this.players) p.send({ type: 'player.cmd', cmd: { op: 'volume', volume: this.outVolume } });
+    this.window?.send({ op: 'volume', volume: this.outVolume });
     this.host.persist(this.np, this.paused, this.volume);
     this.host.changed();
   }
@@ -366,7 +378,7 @@ export class PlayerEngine {
     this.blocked = false;
     if (!isReload) this.reloads = 0;
     const cmd: PlayerCommand = {
-      op: 'play', seq: this.seq, position, volume: this.volume, paused: this.paused,
+      op: 'play', seq: this.seq, position, volume: this.outVolume, paused: this.paused,
       track: { id: np.track.id, source: np.track.source, ref: np.track.ref, title: np.track.title },
     };
     const useWindow = this.windowAll || !m || (np.track.source === 'youtube' && !!np.track.embedBlocked && !!this.window?.available());

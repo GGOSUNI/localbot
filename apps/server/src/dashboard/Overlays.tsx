@@ -13,6 +13,10 @@ export function Overlays({ app }: { app: AppState }) {
       name: '🎰 룰렛', path: '/o/roulette', size: '1920 × 1080', online: app.roulette!.overlayOnline,
       desc: '후원으로 룰렛이 돌면 원판이 돌아갑니다. 효과음을 끄려면 주소 끝에 &sound=0',
     },
+    {
+      name: '💰 후원 알림 (TTS)', path: '/o/alert', size: '1920 × 1080', online: null,
+      desc: 'TTS가 읽는 동안 화면 위쪽에 후원 카드를 띄웁니다. 소리는 LocalBot이 스피커로 직접 내므로 오디오 설정은 필요 없어요. (선택)',
+    },
   ];
   const copy = async (text: string) => {
     try {

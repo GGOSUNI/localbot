@@ -1,0 +1,126 @@
+import type { TtsSettings, TtsState } from '@localbot/shared';
+import { useEffect, useState } from 'react';
+import { post, won } from './store.ts';
+
+/** 🔊 후원 TTS 설정 */
+export function TtsPage({ t }: { t: TtsState }) {
+  const s = t.settings;
+  const save = (p: Partial<TtsSettings>) => post('/api/tts/settings', p);
+  const [template, setTemplate] = useState(s.template);
+  const [banned, setBanned] = useState(s.bannedWords.join(', '));
+  const [testText, setTestText] = useState('테스트 후원입니다. 잘 들리나요?');
+  useEffect(() => setTemplate(s.template), [s.template]);
+  useEffect(() => setBanned(s.bannedWords.join(', ')), [s.bannedWords.join('\n')]);
+
+  return (
+    <main>
+      <section>
+        <h2>
+          🔊 후원 TTS
+          <span className={`badge ${s.enabled ? 'ok' : ''}`}>{s.enabled ? '켜짐' : '꺼짐'}</span>
+          <span className="spacer" />
+          <label className="row"><input type="checkbox" checked={s.enabled} onChange={(e) => save({ enabled: e.target.checked })} />후원 읽어 주기</label>
+        </h2>
+        {!t.available && (
+          <div className="alert" style={{ marginBottom: 12 }}>이 PC에서는 음성을 낼 수 없습니다 (윈도우에서만 동작). 알림 카드만 표시됩니다.</div>
+        )}
+        <p className="muted small" style={{ marginTop: 0 }}>
+          윈도우 내장 목소리로 <b>스피커에 바로</b> 읽습니다. OBS는 <b>데스크톱 오디오</b>에 그대로 잡혀요 (따로 추가할 소스 없음).
+          읽는 동안 노래 소리는 자동으로 줄어듭니다.
+        </p>
+
+        <div className="ttsnow">
+          {t.speaking ? (
+            <>
+              <span className="badge gold">읽는 중</span>
+              <span className="t">{t.speaking.speech}</span>
+              <button className="sm" onClick={() => post('/api/tts/skip')}>⏭ 건너뛰기</button>
+            </>
+          ) : <span className="muted">지금 읽는 후원 없음</span>}
+          {t.queue.length > 0 && (
+            <>
+              <span className="badge">대기 {t.queue.length}</span>
+              <button className="sm danger" onClick={() => post('/api/tts/clear')}>모두 취소</button>
+            </>
+          )}
+        </div>
+      </section>
+
+      <div className="cols">
+        <section>
+          <h2>읽는 방법</h2>
+          <div className="form">
+            <label className="field">
+              <span>최소 금액</span>
+              <input type="number" min={0} step={100} defaultValue={s.minAmountKRW} key={`m${s.minAmountKRW}`}
+                onBlur={(e) => Number(e.target.value) !== s.minAmountKRW && save({ minAmountKRW: Number(e.target.value) })} />
+              <span className="muted small">{won(s.minAmountKRW)} 이상 후원만 읽음</span>
+            </label>
+            <label className="field col">
+              <span>읽는 문장 <span className="muted small">{'{user}'} 닉네임 · {'{amount}'} 금액 · {'{message}'} 메시지</span></span>
+              <div className="row">
+                <input className="grow" value={template} onChange={(e) => setTemplate(e.target.value)} />
+                <button disabled={template === s.template} onClick={() => save({ template })}>저장</button>
+              </div>
+            </label>
+            <label className="field">
+              <span>메시지 최대 길이</span>
+              <input type="number" min={5} max={300} defaultValue={s.maxChars} key={`c${s.maxChars}`}
+                onBlur={(e) => Number(e.target.value) !== s.maxChars && save({ maxChars: Number(e.target.value) })} />
+              <span className="muted small">글자 (넘으면 잘라서 읽음)</span>
+            </label>
+            <label className="field col">
+              <span>금지어 <span className="muted small">쉼표로 구분 · "삐"로 바꿔 읽음</span></span>
+              <div className="row">
+                <input className="grow" value={banned} onChange={(e) => setBanned(e.target.value)} placeholder="예: 욕설1, 욕설2" />
+                <button disabled={banned === s.bannedWords.join(', ')} onClick={() => save({ bannedWords: banned.split(',') })}>저장</button>
+              </div>
+            </label>
+            <label className="row"><input type="checkbox" checked={s.readAnonymous} onChange={(e) => save({ readAnonymous: e.target.checked })} />익명 후원도 읽기</label>
+            <label className="row"><input type="checkbox" checked={s.duck} onChange={(e) => save({ duck: e.target.checked })} />읽는 동안 노래 소리 줄이기</label>
+            <p className="muted small" style={{ margin: 0 }}>링크·이모티콘은 빼고, ㅋㅋㅋㅋㅋ 같은 반복은 줄여서 읽습니다. <code>!신청곡</code> 같은 명령어 메시지는 읽지 않아요.</p>
+          </div>
+        </section>
+
+        <div className="stack">
+          <section>
+            <h2>목소리</h2>
+            <div className="form">
+              <label className="field">
+                <span>목소리</span>
+                <select value={s.voice} onChange={(e) => save({ voice: e.target.value })}>
+                  <option value="">자동 (한국어 목소리)</option>
+                  {t.voices.map((v) => {
+                    const [name, lang] = v.split('|');
+                    return <option key={v} value={name}>{name} {lang ? `(${lang})` : ''}</option>;
+                  })}
+                </select>
+              </label>
+              <label className="field">
+                <span>빠르기</span>
+                <input type="range" min={-10} max={10} defaultValue={s.rate} key={`r${s.rate}`} onPointerUp={(e) => save({ rate: Number(e.currentTarget.value) })} onKeyUp={(e) => save({ rate: Number(e.currentTarget.value) })} />
+                <b style={{ width: 28 }}>{s.rate}</b>
+              </label>
+              <label className="field">
+                <span>음량</span>
+                <input type="range" min={0} max={100} defaultValue={s.volume} key={`v${s.volume}`} onPointerUp={(e) => save({ volume: Number(e.currentTarget.value) })} onKeyUp={(e) => save({ volume: Number(e.currentTarget.value) })} />
+                <b style={{ width: 28 }}>{s.volume}</b>
+              </label>
+              {t.available && t.voices.length > 0 && !t.voices.some((v) => v.endsWith('|ko-KR')) && (
+                <div className="alert small">한국어 목소리가 없습니다 → 윈도우 설정 · 시간 및 언어 · 언어 · <b>한국어</b> 추가 (음성 포함)</div>
+              )}
+            </div>
+          </section>
+          <section>
+            <h2>들어 보기</h2>
+            <div className="row">
+              <input className="grow" value={testText} onChange={(e) => setTestText(e.target.value)} />
+              <button className="primary" onClick={() => post('/api/tts/test', { text: testText })}>▶ 테스트</button>
+            </div>
+            <p className="muted small" style={{ marginBottom: 0 }}>홈 탭의 <b>가짜 후원</b>으로도 실제 흐름(TTS + 룰렛 + 신청곡)을 확인할 수 있어요.</p>
+          </section>
+        </div>
+      </div>
+    </main>
+  );
+}

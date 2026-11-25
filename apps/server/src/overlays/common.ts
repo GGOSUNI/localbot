@@ -5,7 +5,7 @@ export const overlayKey = params.get('key') ?? '';
 export const inOBS = typeof (window as any).obsstudio !== 'undefined';
 
 /** 오버레이 ↔ 서버 연결. 끊기면 계속 다시 붙습니다 (LocalBot 재시작, 워커 복구 등) */
-export function connectOverlay(role: 'player' | 'overlay', onMessage: (m: OverlayMessage) => void, onStatus?: (up: boolean) => void) {
+export function connectOverlay(role: 'player' | 'overlay' | 'alert', onMessage: (m: OverlayMessage) => void, onStatus?: (up: boolean) => void) {
   let ws: WebSocket | null = null;
   let retry = 0;
   const open = () => {

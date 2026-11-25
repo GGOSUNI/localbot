@@ -17,6 +17,8 @@ import roulettePage from '../overlays/roulette.html';
 import { fromShareCode, TEMPLATES, toShareCode } from '../modules/roulette/logic.ts';
 import type { RouletteService } from '../modules/roulette/service.ts';
 import type { SongService } from '../modules/songs/service.ts';
+import type { TtsService } from '../modules/tts/service.ts';
+import alertPage from '../overlays/alert.html';
 import { csrfOk, hasSession, hostAllowed, sessionCookie, timingSafeEqual } from './security.ts';
 
 const log = createLogger('http');
@@ -36,6 +38,7 @@ interface Deps {
   songs: SongService;
   roulette: RouletteService;
   ytWindow: { setVisible(v: boolean): Promise<void>; isVisible: boolean };
+  tts: TtsService;
   workerStartedAt: number;
   onCrashRequested: () => void;
   onQuitRequested: () => void;
@@ -46,13 +49,14 @@ export interface HttpHandle {
   broadcastConnection(state: ConnectionState): void;
   broadcastOfficial(state: OfficialStatus): void;
   broadcastFrame(jpeg: string): void;
+  broadcastTts(): void;
   broadcastSongs(): void;
   broadcastRoulette(): void;
 }
 
 type WsData =
   | { kind: 'dashboard' }
-  | { kind: 'overlay'; id: string; role: 'player' | 'overlay' };
+  | { kind: 'overlay'; id: string; role: 'player' | 'overlay' | 'alert' };
 
 type Json = Record<string, any>;
 type Route = { method: string; re: RegExp; fn: (m: RegExpMatchArray, body: Json) => unknown | Promise<unknown> };
@@ -149,6 +153,11 @@ export function startHttp(deps: Deps): HttpHandle {
     { method: 'POST', re: /^\/api\/songs\/pause$/, fn: () => (S.engine.pause(), ok) },
     { method: 'POST', re: /^\/api\/songs\/resume$/, fn: () => (S.engine.resume(), ok) },
     { method: 'POST', re: /^\/api\/songs\/volume$/, fn: (_, b) => (S.engine.setVolume(Number(b.volume)), ok) },
+    { method: 'GET', re: /^\/api\/tts$/, fn: () => deps.tts.state() },
+    { method: 'POST', re: /^\/api\/tts\/settings$/, fn: (_, b) => deps.tts.setSettings(b) },
+    { method: 'POST', re: /^\/api\/tts\/test$/, fn: (_, b) => (deps.tts.test(typeof b.text === 'string' && b.text.trim() ? b.text : undefined), ok) },
+    { method: 'POST', re: /^\/api\/tts\/skip$/, fn: () => (deps.tts.skip(), ok) },
+    { method: 'POST', re: /^\/api\/tts\/clear$/, fn: () => (deps.tts.clear(), ok) },
     { method: 'POST', re: /^\/api\/songs\/window$/, fn: async (_, b) => (await deps.ytWindow.setVisible(!!b.visible), { ok: true, visible: deps.ytWindow.isVisible }) },
     { method: 'POST', re: /^\/api\/songs\/retry-youtube$/, fn: () => (S.engine.endFallback(), ok) },
     { method: 'POST', re: /^\/api\/songs\/undo$/, fn: () => ({ ok: true, undone: S.undo() }) },
@@ -197,6 +206,7 @@ export function startHttp(deps: Deps): HttpHandle {
       '/o/player': playerPage,
       '/o/nowplaying': nowPlayingPage,
       '/o/roulette': roulettePage,
+      '/o/alert': alertPage,
     },
 
     async fetch(req, srv) {
@@ -254,7 +264,8 @@ setTimeout(()=>location.href='http://127.0.0.1:${deps.port}/#home',r.ok?1500:600
       if (url.pathname === '/ws/overlay' || url.pathname.startsWith('/media/')) {
         if (!timingSafeEqual(url.searchParams.get('key') ?? '', deps.overlayKey())) return json({ error: 'bad overlay key' }, 401);
         if (url.pathname === '/ws/overlay') {
-          const role = url.searchParams.get('role') === 'player' ? 'player' : 'overlay';
+          const r = url.searchParams.get('role');
+          const role = r === 'player' ? 'player' : r === 'alert' ? 'alert' : 'overlay';
           return srv.upgrade(req, { data: { kind: 'overlay', id: crypto.randomUUID(), role } }) ? undefined : json({ error: 'upgrade' }, 400);
         }
         return serveMedia(req, deps.songs.localFile(Number(url.pathname.slice('/media/'.length))));
@@ -292,6 +303,7 @@ setTimeout(()=>location.href='http://127.0.0.1:${deps.port}/#home',r.ok?1500:600
           };
           ws.send(JSON.stringify(hello));
           if (lastFrame) ws.send(JSON.stringify({ type: 'frame', jpeg: lastFrame } satisfies ServerMessage));
+          ws.send(JSON.stringify({ type: 'tts', state: deps.tts.state() } satisfies ServerMessage));
           return;
         }
         overlays.add(ws);
@@ -300,6 +312,7 @@ setTimeout(()=>location.href='http://127.0.0.1:${deps.port}/#home',r.ok?1500:600
         const st = deps.songs.state();
         send({ type: 'songs', state: { now: st.now, paused: st.paused, queue: st.queue.slice(0, 10) } });
         if (d.role === 'player') deps.songs.engine.addPlayer(d.id, send);
+        else if (d.role === 'alert') deps.tts.addOverlay(d.id, send);
         else deps.roulette.addOverlay(d.id, send);
       },
       close(ws) {
@@ -307,6 +320,7 @@ setTimeout(()=>location.href='http://127.0.0.1:${deps.port}/#home',r.ok?1500:600
         if (d.kind === 'dashboard') return void dashboards.delete(ws);
         overlays.delete(ws);
         if (d.role === 'player') deps.songs.engine.removePlayer(d.id);
+        else if (d.role === 'alert') deps.tts.removeOverlay(d.id);
         else deps.roulette.removeOverlay(d.id);
       },
       message(ws, raw) {
@@ -334,6 +348,7 @@ setTimeout(()=>location.href='http://127.0.0.1:${deps.port}/#home',r.ok?1500:600
     stop: () => server.stop(true),
     broadcastConnection: (state) => toDash({ type: 'connection', state }),
     broadcastOfficial: (state) => toDash({ type: 'official', state }),
+    broadcastTts: () => toDash({ type: 'tts', state: deps.tts.state() }),
     broadcastFrame: (jpeg) => {
       lastFrame = jpeg;
       if (dashboards.size) toDash({ type: 'frame', jpeg });
