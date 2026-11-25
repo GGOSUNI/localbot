@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PlayerReport } from '@localbot/shared';
-import { WindowPlayer } from '../apps/server/src/modules/songs/window-player.ts';
+import { jpegSize, WindowPlayer } from '../apps/server/src/modules/songs/window-player.ts';
 
 /**
  * 실제 크로미움을 띄워 유튜브 창 플레이어를 조종해 봄.
@@ -15,17 +15,6 @@ let dir: string;
 let server: ReturnType<typeof Bun.serve>;
 let pageState: Record<string, string> | null = null;
 
-/** JPEG 크기 읽기 (SOF 마커) */
-function jpegSize(b64: string) {
-  const b = Buffer.from(b64, 'base64');
-  for (let i = 2; i < b.length - 9; ) {
-    if (b[i] !== 0xff) return null;
-    const m = b[i + 1]!, len = b.readUInt16BE(i + 2);
-    if (m >= 0xc0 && m <= 0xc3) return { h: b.readUInt16BE(i + 5), w: b.readUInt16BE(i + 7) };
-    i += 2 + len;
-  }
-  return null;
-}
 
 function wav(seconds: number) {
   const rate = 8000, n = rate * seconds;
@@ -143,7 +132,7 @@ describe.skipIf(!hasChrome)('유튜브 창 플레이어 (실제 크로미움)', 
     expect(reports.some((r) => r.type === 'player.hb' && r.state === 'playing')).toBe(true);
     for (let i = 0; i < 20 && !frames.length; i++) await Bun.sleep(250);
     expect(frames.length).toBeGreaterThan(0);
-    expect(jpegSize(frames.at(-1)!)).toEqual({ w: 640, h: 360 });
+    for (const f of frames) expect(jpegSize(f)).toEqual({ w: 640, h: 360 }); // 찌그러진 프레임은 대시보드로 안 보냄
     await wp.shutdown();
   }, 30_000);
 

@@ -46,8 +46,20 @@ export interface TtsSettings {
   bannedWords: string[];
   /** 익명 후원도 읽기 */
   readAnonymous: boolean;
+  /** 일반 채팅 읽기 */
+  readChat: boolean;
+  /** 후원 메시지 읽기 */
+  readDonations: boolean;
+  /** 채팅을 읽을 대상 */
+  chatWho: 'all' | 'subscriber' | 'manager';
+  /** 스트리머 본인 채팅(봇 답장 포함)도 읽기 */
+  readStreamer: boolean;
+  /** 읽지 않을 닉네임 (다른 봇 등) */
+  ignoreNames: string[];
+  /** 채팅이 이만큼 밀리면 오래된 채팅부터 버림 */
+  maxQueue: number;
 }
-export interface TtsItem { id: number; nickname: string | null; amountKRW: number; message: string; speech: string; at: number }
+export interface TtsItem { id: number; kind: 'chat' | 'donation'; nickname: string | null; amountKRW: number; message: string; speech: string; at: number }
 export interface TtsState { settings: TtsSettings; available: boolean; speaking: TtsItem | null; queue: TtsItem[]; voices: string[] }
 
 export type ServerMessage =

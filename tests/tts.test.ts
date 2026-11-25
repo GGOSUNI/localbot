@@ -8,7 +8,7 @@ import { TtsService } from '../apps/server/src/modules/tts/service.ts';
 import type { Speaker } from '../apps/server/src/modules/tts/speaker.ts';
 import { cleanMessage, DEFAULT_TTS, sanitizeTts, speechFor } from '../apps/server/src/modules/tts/text.ts';
 
-const viewer = (nick: string): Viewer => ({ platform: 'chzzk', id: `id-${nick}`, nickname: nick, roles: ['viewer'] });
+const viewer = (nick: string, roles: Viewer['roles'] = ['viewer']): Viewer => ({ platform: 'chzzk', id: `id-${nick}`, nickname: nick, roles });
 
 describe('읽을 문장 만들기', () => {
   test('링크·이모지·치지직 이모티콘 제거, 반복 줄이기', () => {
@@ -25,6 +25,7 @@ describe('읽을 문장 만들기', () => {
     const t = { ...DEFAULT_TTS, template: '{user}님 {amount}원. {message}' };
     expect(speechFor({ nickname: '꼬순이', amountKRW: 5000, text: '안녕' }, t)).toBe('꼬순이님 5000원. 안녕');
     expect(speechFor({ nickname: null, amountKRW: 1000, text: '' }, t)).toBe('익명님 1000원.');
+    expect(speechFor({ nickname: '시청자', amountKRW: 0, text: '안녕' }, { ...DEFAULT_TTS, template: '{user}님 {amount}원 {message}' })).toBe('시청자님 안녕'); // 채팅엔 금액 없음
   });
   test('설정값 정리', () => {
     expect(sanitizeTts({ rate: 99, volume: -5, maxChars: 1, minAmountKRW: 'x' as unknown as number, template: '' })).toEqual({
@@ -85,11 +86,11 @@ describe('후원 TTS 대기열', () => {
     expect(overlay[0]).toMatchObject({ type: 'alert.show', alert: { nickname: '가', amountKRW: 1000 } });
     speaker.finish();
     await until(() => speaker.spoken.length === 2);
-    expect(ducks).toEqual([true, false, true]);
+    expect(ducks).toEqual([true]); // 연달아 읽는 동안 노래는 계속 줄인 채로
     expect(overlay.map((m) => m.type)).toEqual(['alert.show', 'alert.hide', 'alert.show']);
     speaker.finish();
-    await until(() => tts.state().speaking === null && ducks.length === 4);
-    expect(ducks.at(-1)).toBe(false);
+    await until(() => tts.state().speaking === null && ducks.length === 2);
+    expect(ducks).toEqual([true, false]);
   });
 
   test('최소 금액 · 익명 · 끄기', async () => {
@@ -144,6 +145,51 @@ describe('후원 TTS 대기열', () => {
     const t = new TtsService(db, new FakeSpeaker(), { duck: () => {}, onChange: () => {} });
     expect(t.settings().template).toBe('{message}');
     expect(t.settings().minAmountKRW).toBe(3000);
+  });
+
+  test('일반 채팅 읽기: 메시지만, 명령어·스트리머 본인(봇 답장)·무시 닉네임은 안 읽음, 알림 카드 없음', async () => {
+    const { speaker, tts } = setup();
+    const overlay: OverlayMessage[] = [];
+    tts.addOverlay('o', (m) => overlay.push(m));
+    tts.onChat(viewer('시청자1'), '!신청곡 아이유');
+    tts.onChat(viewer('꼬순이', ['streamer']), '🎵 지금 재생 중: 밤편지');
+    tts.setSettings({ ignoreNames: ['뚜봇'] });
+    tts.onChat(viewer('뚜봇'), '출석체크 완료');
+    tts.onChat(viewer('시청자2'), '안녕하세요ㅋㅋㅋㅋ {:d_51:}');
+    await until(() => speaker.spoken.length === 1);
+    expect(speaker.spoken).toEqual(['안녕하세요ㅋㅋ']);
+    expect(tts.state().speaking).toMatchObject({ kind: 'chat', nickname: '시청자2' });
+    expect(overlay).toHaveLength(0);
+  });
+
+  test('채팅 대상: 구독자만 / 매니저만, 끄기', async () => {
+    const { speaker, tts } = setup();
+    tts.setSettings({ chatWho: 'subscriber' });
+    tts.onChat(viewer('일반'), '1');
+    tts.onChat(viewer('구독', ['subscriber']), '2');
+    await until(() => speaker.spoken.length === 1);
+    speaker.finish();
+    tts.setSettings({ chatWho: 'manager' });
+    tts.onChat(viewer('구독', ['subscriber']), '3');
+    tts.onChat(viewer('매니저', ['manager']), '4');
+    await until(() => speaker.spoken.length === 2);
+    speaker.finish();
+    tts.setSettings({ readChat: false });
+    tts.onChat(viewer('매니저', ['manager']), '5');
+    await Bun.sleep(700);
+    expect(speaker.spoken).toEqual(['2', '4']);
+  });
+
+  test('채팅이 밀리면 오래된 채팅부터 버림 (후원은 안 버림)', async () => {
+    const { speaker, tts } = setup();
+    tts.setSettings({ maxQueue: 2 });
+    tts.onChat(viewer('a'), '첫채팅'); // 바로 읽기 시작
+    await until(() => speaker.spoken.length === 1);
+    tts.onChat(viewer('a'), 'c1');
+    tts.onDonation(viewer('b'), 1000, '후원');
+    tts.onChat(viewer('a'), 'c2');
+    tts.onChat(viewer('a'), 'c3');
+    expect(tts.state().queue.map((q) => q.message)).toEqual(['후원', 'c2', 'c3']);
   });
 
   test('설정은 DB에 저장', () => {

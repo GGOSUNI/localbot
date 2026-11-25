@@ -105,7 +105,10 @@ export async function runWorker(): Promise<void> {
 
   bus.on(async (env) => {
     const e = env.event;
-    if (e.type === 'chat') await commands.handle(env);
+    if (e.type === 'chat') {
+      tts.onChat(e.viewer, e.text);
+      await commands.handle(env);
+    }
     if (e.type === 'donation') {
       roulette.onDonation(e.viewer, e.amountKRW);
       tts.onDonation(e.viewer, e.amountKRW, e.text);

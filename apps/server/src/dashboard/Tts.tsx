@@ -8,7 +8,9 @@ export function TtsPage({ t }: { t: TtsState }) {
   const save = (p: Partial<TtsSettings>) => post('/api/tts/settings', p);
   const [template, setTemplate] = useState(s.template);
   const [banned, setBanned] = useState(s.bannedWords.join(', '));
-  const [testText, setTestText] = useState('테스트 후원입니다. 잘 들리나요?');
+  const [ignore, setIgnore] = useState(s.ignoreNames.join(', '));
+  useEffect(() => setIgnore(s.ignoreNames.join(', ')), [s.ignoreNames.join('\n')]);
+  const [testText, setTestText] = useState('테스트입니다. 잘 들리나요?');
   useEffect(() => setTemplate(s.template), [s.template]);
   useEffect(() => setBanned(s.bannedWords.join(', ')), [s.bannedWords.join('\n')]);
 
@@ -16,27 +18,32 @@ export function TtsPage({ t }: { t: TtsState }) {
     <main>
       <section>
         <h2>
-          🔊 후원 TTS
+          🔊 TTS — 채팅 읽어 주기
           <span className={`badge ${s.enabled ? 'ok' : ''}`}>{s.enabled ? '켜짐' : '꺼짐'}</span>
           <span className="spacer" />
-          <label className="row"><input type="checkbox" checked={s.enabled} onChange={(e) => save({ enabled: e.target.checked })} />후원 읽어 주기</label>
+          <label className="row"><input type="checkbox" checked={s.enabled} onChange={(e) => save({ enabled: e.target.checked })} />TTS 켜기</label>
         </h2>
+        <div className="row" style={{ marginBottom: 12, gap: 18 }}>
+          <label className="row"><input type="checkbox" checked={s.readChat} onChange={(e) => save({ readChat: e.target.checked })} /><b>일반 채팅 읽기</b></label>
+          <label className="row"><input type="checkbox" checked={s.readDonations} onChange={(e) => save({ readDonations: e.target.checked })} /><b>후원 메시지 읽기</b></label>
+        </div>
         {!t.available && (
           <div className="alert" style={{ marginBottom: 12 }}>이 PC에서는 음성을 낼 수 없습니다 (윈도우에서만 동작). 알림 카드만 표시됩니다.</div>
         )}
         <p className="muted small" style={{ marginTop: 0 }}>
-          윈도우 내장 목소리로 <b>스피커에 바로</b> 읽습니다. OBS는 <b>데스크톱 오디오</b>에 그대로 잡혀요 (따로 추가할 소스 없음).
+          시청자 채팅을 윈도우 내장 목소리로 <b>스피커에 바로</b> 읽습니다. OBS는 <b>데스크톱 오디오</b>에 그대로 잡혀요 (따로 추가할 소스 없음).
           읽는 동안 노래 소리는 자동으로 줄어듭니다.
         </p>
 
         <div className="ttsnow">
           {t.speaking ? (
             <>
-              <span className="badge gold">읽는 중</span>
+              <span className={`badge ${t.speaking.kind === 'donation' ? 'gold' : 'ok'}`}>{t.speaking.kind === 'donation' ? '후원' : '채팅'}</span>
+              {t.speaking.nickname && <b>{t.speaking.nickname}</b>}
               <span className="t">{t.speaking.speech}</span>
               <button className="sm" onClick={() => post('/api/tts/skip')}>⏭ 건너뛰기</button>
             </>
-          ) : <span className="muted">지금 읽는 후원 없음</span>}
+          ) : <span className="muted">지금 읽는 메시지 없음</span>}
           {t.queue.length > 0 && (
             <>
               <span className="badge">대기 {t.queue.length}</span>
@@ -51,13 +58,35 @@ export function TtsPage({ t }: { t: TtsState }) {
           <h2>읽는 방법</h2>
           <div className="form">
             <label className="field">
-              <span>최소 금액</span>
+              <span>채팅 읽을 대상</span>
+              <select value={s.chatWho} onChange={(e) => save({ chatWho: e.target.value as TtsSettings['chatWho'] })}>
+                <option value="all">모든 시청자</option>
+                <option value="subscriber">구독자 · 매니저만</option>
+                <option value="manager">매니저만</option>
+              </select>
+            </label>
+            <label className="row"><input type="checkbox" checked={s.readStreamer} onChange={(e) => save({ readStreamer: e.target.checked })} />스트리머 본인 채팅도 읽기 <span className="muted small">(봇 답장도 본인 계정으로 나가서 꺼 두는 걸 추천)</span></label>
+            <label className="field col">
+              <span>안 읽을 닉네임 <span className="muted small">쉼표로 구분 · 다른 봇 등</span></span>
+              <div className="row">
+                <input className="grow" value={ignore} onChange={(e) => setIgnore(e.target.value)} placeholder="예: 뚜봇, 나디아봇" />
+                <button disabled={ignore === s.ignoreNames.join(', ')} onClick={() => save({ ignoreNames: ignore.split(',') })}>저장</button>
+              </div>
+            </label>
+            <label className="field">
+              <span>채팅 밀림 한도</span>
+              <input type="number" min={1} max={50} defaultValue={s.maxQueue} key={`q${s.maxQueue}`}
+                onBlur={(e) => Number(e.target.value) !== s.maxQueue && save({ maxQueue: Number(e.target.value) })} />
+              <span className="muted small">개 넘게 밀리면 오래된 채팅부터 건너뜀</span>
+            </label>
+            <label className="field">
+              <span>후원 최소 금액</span>
               <input type="number" min={0} step={100} defaultValue={s.minAmountKRW} key={`m${s.minAmountKRW}`}
                 onBlur={(e) => Number(e.target.value) !== s.minAmountKRW && save({ minAmountKRW: Number(e.target.value) })} />
-              <span className="muted small">{won(s.minAmountKRW)} 이상 후원만 읽음</span>
+              <span className="muted small">{won(s.minAmountKRW)} 이상 후원 메시지만 읽음</span>
             </label>
             <label className="field col">
-              <span>읽는 문장 <span className="muted small">기본은 후원 메시지만 읽음 · 원하면 {'{user}'} 닉네임 · {'{amount}'} 금액 추가</span></span>
+              <span>읽는 문장 <span className="muted small">기본은 메시지만 · 원하면 {'{user}'} 닉네임 · {'{amount}'} 후원 금액 추가</span></span>
               <div className="row">
                 <input className="grow" value={template} onChange={(e) => setTemplate(e.target.value)} />
                 <button disabled={template === s.template} onClick={() => save({ template })}>저장</button>
@@ -117,7 +146,7 @@ export function TtsPage({ t }: { t: TtsState }) {
               <input className="grow" value={testText} onChange={(e) => setTestText(e.target.value)} />
               <button className="primary" onClick={() => post('/api/tts/test', { text: testText })}>▶ 테스트</button>
             </div>
-            <p className="muted small" style={{ marginBottom: 0 }}>홈 탭의 <b>가짜 후원</b>으로도 실제 흐름(TTS + 룰렛 + 신청곡)을 확인할 수 있어요.</p>
+            <p className="muted small" style={{ marginBottom: 0 }}>홈 탭의 <b>가짜 채팅 · 가짜 후원</b>으로 실제 흐름을 확인할 수 있어요.</p>
           </section>
         </div>
       </div>

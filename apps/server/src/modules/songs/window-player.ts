@@ -157,6 +157,18 @@ export const PAGE_SCRIPT = `(() => {
   document.addEventListener('loadedmetadata', check, true);
 })();`;
 
+/** JPEG 가로·세로 (base64 앞부분의 SOF 마커만 읽음) */
+export function jpegSize(b64: string): { w: number; h: number } | null {
+  const b = Buffer.from(b64.slice(0, 4000), 'base64');
+  for (let i = 2; i + 9 < b.length; ) {
+    if (b[i] !== 0xff) return null;
+    const m = b[i + 1]!;
+    if (m >= 0xc0 && m <= 0xc3) return { h: b.readUInt16BE(i + 5), w: b.readUInt16BE(i + 7) };
+    i += 2 + b.readUInt16BE(i + 2);
+  }
+  return null;
+}
+
 interface PageState {
   vid: string | null;
   href: string;
@@ -287,6 +299,9 @@ export class WindowPlayer {
     if (!this.o.onFrame) return;
     cdp.on('Page.screencastFrame', (p: { data: string; sessionId: number }) => {
       void cdp.send('Page.screencastFrameAck', { sessionId: p.sessionId }).catch(() => {});
+      // 화면 크기가 16:9로 바뀌기 전 프레임은 버림 (찌그러진 화면 방지)
+      const size = jpegSize(p.data);
+      if (!this.visible && size && Math.abs(size.w / size.h - 16 / 9) > 0.05) return;
       const now = Date.now();
       if (now - this.lastFrameAt < 80 || !this.current) return; // 최대 약 12프레임
       if (!this.lastFrameAt) log.info('screencast frames flowing');
@@ -456,7 +471,8 @@ export class WindowPlayer {
         this.cdp = cdp;
         await this.applyViewport();
         this.startScreencast(cdp);
-        void this.applyVisibility();
+        // 처음엔 화면 밖에 띄우므로 창을 옮길 필요 없음 (사용자가 '보이기'를 눌러 둔 경우만)
+        if (this.visible) void this.applyVisibility();
         return cdp;
       } catch (err) {
         log.warn('cdp connect failed', String(err));

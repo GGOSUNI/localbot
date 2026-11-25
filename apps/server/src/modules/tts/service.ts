@@ -23,6 +23,7 @@ export class TtsService {
   private voiceList: string[] = [];
   /** 말하기 시작 전(노래 줄이는 중)에 누른 건너뛰기 */
   private skipPending = false;
+  private running = false;
 
   constructor(
     private db: Database,
@@ -53,14 +54,34 @@ export class TtsService {
 
   onDonation(viewer: Viewer | null, amountKRW: number, text: string | undefined) {
     const s = this.settings();
-    if (!s.enabled || amountKRW < s.minAmountKRW) return;
+    if (!s.enabled || !s.readDonations || amountKRW < s.minAmountKRW) return;
     if (!viewer && !s.readAnonymous) return;
-    this.enqueue({ nickname: viewer?.nickname ?? null, amountKRW, text });
+    if (viewer && this.ignored(viewer, s)) return;
+    this.enqueue({ kind: 'donation', nickname: viewer?.nickname ?? null, amountKRW, text });
+  }
+
+  /** 일반 채팅 읽기 */
+  onChat(viewer: Viewer, text: string) {
+    const s = this.settings();
+    if (!s.enabled || !s.readChat) return;
+    const t = text.trim();
+    if (!t || t.startsWith('!')) return; // 명령어는 안 읽음
+    const r = viewer.roles;
+    if (r.includes('streamer') && !s.readStreamer) return;
+    if (s.chatWho === 'manager' && !r.includes('manager') && !r.includes('streamer')) return;
+    if (s.chatWho === 'subscriber' && !r.some((x) => x === 'subscriber' || x === 'manager' || x === 'streamer')) return;
+    if (this.ignored(viewer, s)) return;
+    this.enqueue({ kind: 'chat', nickname: viewer.nickname, amountKRW: 0, text: t });
+  }
+
+  private ignored(v: Viewer, s: TtsSettings) {
+    const n = v.nickname.trim().toLowerCase();
+    return s.ignoreNames.some((x) => x.trim().toLowerCase() === n);
   }
 
   /** 대시보드 "테스트" */
-  test(text = '테스트 후원입니다. 잘 들리나요?') {
-    this.enqueue({ nickname: '테스트시청자', amountKRW: 1000, text });
+  test(text = '테스트입니다. 잘 들리나요?') {
+    this.enqueue({ kind: 'chat', nickname: '테스트시청자', amountKRW: 0, text });
   }
 
   skip() {
@@ -82,50 +103,72 @@ export class TtsService {
     this.overlays.delete(id);
   }
 
-  private enqueue(i: { nickname: string | null; amountKRW: number; text?: string }) {
+  private enqueue(i: { kind: TtsItem['kind']; nickname: string | null; amountKRW: number; text?: string }) {
     const s = this.settings();
     const item: TtsItem = {
       // 방송 화면용: 링크·금지어는 화면에도 안 나오게
-      id: this.nextId++, nickname: i.nickname, amountKRW: i.amountKRW, message: cleanMessage(i.text ?? '', { maxChars: 120, bannedWords: s.bannedWords }),
+      id: this.nextId++, kind: i.kind, nickname: i.nickname, amountKRW: i.amountKRW, message: cleanMessage(i.text ?? '', { maxChars: 120, bannedWords: s.bannedWords }),
       speech: speechFor(i, s), at: (this.hooks.now ?? Date.now)(),
     };
+    if (item.kind === 'chat' && !item.speech) return;
     this.queue.push(item);
-    log.info(`queued #${item.id}: ${item.speech}`);
+    // 채팅이 너무 밀리면 오래된 채팅부터 버림 (후원은 안 버림)
+    let chats = this.queue.filter((q) => q.kind === 'chat').length;
+    while (chats > s.maxQueue) {
+      const i2 = this.queue.findIndex((q) => q.kind === 'chat');
+      this.queue.splice(i2, 1);
+      chats--;
+    }
+    log.info(`queued #${item.id} (${item.kind}): ${item.speech}`);
     this.hooks.onChange();
-    if (!this.speaking) void this.run();
+    if (!this.running) void this.run();
   }
 
   private async run() {
-    while (this.queue.length) {
-      const item = this.queue.shift()!;
-      const s = this.settings();
-      this.speaking = item;
-      this.hooks.onChange();
-      for (const send of this.overlays.values()) send({ type: 'alert.show', alert: item });
-      const duck = s.duck && !!item.speech; // 읽을 메시지가 없으면 노래도 안 줄임
-      if (duck) this.hooks.duck(true);
-      try {
-        if (duck) await Bun.sleep(400); // 노래 소리가 줄어든 뒤 읽기
-        if (!item.speech) {
-          await Bun.sleep(3000); // 메시지 없는 후원: 읽을 게 없으니 알림 카드만
-        } else if (!this.skipPending && this.speaker.available) {
-          const h = this.speaker.speak(item.speech, { voice: s.voice, rate: s.rate, volume: s.volume });
-          this.cancel = h.cancel;
-          await h.done;
-        } else if (!this.skipPending) {
-          await Bun.sleep(4000); // 목소리가 없는 PC: 알림 카드만 잠깐 보여 줌
-        }
-      } catch (err) {
-        log.warn('speak failed', String(err));
-      } finally {
-        this.cancel = null;
-        this.skipPending = false;
-        if (duck) this.hooks.duck(false);
-        for (const send of this.overlays.values()) send({ type: 'alert.hide', id: item.id });
-        this.speaking = null;
+    this.running = true;
+    let ducked = false;
+    const duck = (on: boolean) => {
+      if (ducked === on) return;
+      ducked = on;
+      this.hooks.duck(on);
+    };
+    try {
+      while (this.queue.length) {
+        const item = this.queue.shift()!;
+        const s = this.settings();
+        this.speaking = item;
         this.hooks.onChange();
+        const card = item.kind === 'donation';
+        if (card) for (const send of this.overlays.values()) send({ type: 'alert.show', alert: item });
+        try {
+          // 읽을 게 있을 때만 노래 소리 줄임. 연달아 읽는 동안은 계속 줄인 채로
+          if (item.speech && s.duck && !ducked) {
+            duck(true);
+            await Bun.sleep(400);
+          }
+          if (!item.speech) {
+            await Bun.sleep(3000); // 메시지 없는 후원: 알림 카드만
+          } else if (!this.skipPending && this.speaker.available) {
+            const h = this.speaker.speak(item.speech, { voice: s.voice, rate: s.rate, volume: s.volume });
+            this.cancel = h.cancel;
+            await h.done;
+          } else if (!this.skipPending) {
+            await Bun.sleep(card ? 4000 : 1500); // 목소리가 없는 PC
+          }
+        } catch (err) {
+          log.warn('speak failed', String(err));
+        } finally {
+          this.cancel = null;
+          this.skipPending = false;
+          if (card) for (const send of this.overlays.values()) send({ type: 'alert.hide', id: item.id });
+          this.speaking = null;
+          this.hooks.onChange();
+        }
+        await Bun.sleep(250);
       }
-      await Bun.sleep(300);
+    } finally {
+      duck(false);
+      this.running = false;
     }
   }
 }

@@ -18,6 +18,12 @@ export const DEFAULT_TTS: TtsSettings = {
   duck: true,
   bannedWords: [],
   readAnonymous: true,
+  readChat: true,
+  readDonations: true,
+  chatWho: 'all',
+  readStreamer: false,
+  ignoreNames: [],
+  maxQueue: 5,
 };
 
 const EMOJI = /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}]/gu;
@@ -46,7 +52,7 @@ export function speechFor(input: { nickname: string | null; amountKRW: number; t
   const message = raw.startsWith('!') ? '' : cleanMessage(raw, s);
   return s.template
     .replace(/\{user\}/g, input.nickname ?? '익명')
-    .replace(/\{amount\}/g, String(input.amountKRW))
+    .replace(/\{amount\}(원)?/g, (_, w) => (input.amountKRW > 0 ? `${input.amountKRW}${w ?? ''}` : ''))
     .replace(/\{message\}/g, message)
     .replace(/\s+/g, ' ')
     .trim();
@@ -57,11 +63,17 @@ export function sanitizeTts(p: Partial<TtsSettings>): Partial<TtsSettings> {
   if (typeof p.enabled === 'boolean') out.enabled = p.enabled;
   if (typeof p.duck === 'boolean') out.duck = p.duck;
   if (typeof p.readAnonymous === 'boolean') out.readAnonymous = p.readAnonymous;
+  if (typeof p.readChat === 'boolean') out.readChat = p.readChat;
+  if (typeof p.readDonations === 'boolean') out.readDonations = p.readDonations;
+  if (typeof p.readStreamer === 'boolean') out.readStreamer = p.readStreamer;
+  if (p.chatWho === 'all' || p.chatWho === 'subscriber' || p.chatWho === 'manager') out.chatWho = p.chatWho;
+  if (Array.isArray(p.ignoreNames)) out.ignoreNames = p.ignoreNames.map((w) => String(w).trim()).filter(Boolean).slice(0, 200);
   const num = (v: unknown, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(Number(v))));
   if (p.minAmountKRW !== undefined && Number.isFinite(Number(p.minAmountKRW))) out.minAmountKRW = num(p.minAmountKRW, 0, 10_000_000);
   if (p.maxChars !== undefined && Number.isFinite(Number(p.maxChars))) out.maxChars = num(p.maxChars, 5, 300);
   if (p.rate !== undefined && Number.isFinite(Number(p.rate))) out.rate = num(p.rate, -10, 10);
   if (p.volume !== undefined && Number.isFinite(Number(p.volume))) out.volume = num(p.volume, 0, 100);
+  if (p.maxQueue !== undefined && Number.isFinite(Number(p.maxQueue))) out.maxQueue = num(p.maxQueue, 1, 50);
   if (typeof p.template === 'string') out.template = p.template.slice(0, 200) || DEFAULT_TTS.template;
   if (typeof p.voice === 'string') out.voice = p.voice.slice(0, 120);
   if (Array.isArray(p.bannedWords)) out.bannedWords = p.bannedWords.map((w) => String(w).trim()).filter(Boolean).slice(0, 200);
