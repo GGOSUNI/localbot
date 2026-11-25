@@ -14,6 +14,8 @@ import { CommandRouter } from './modules/commands.ts';
 import { RouletteService } from './modules/roulette/service.ts';
 import { registerSongCommands } from './modules/songs/commands.ts';
 import { SongService } from './modules/songs/service.ts';
+import { WINDOW_ID } from './modules/songs/engine.ts';
+import { WindowPlayer } from './modules/songs/window-player.ts';
 import { ensureDashboardKey } from './supervisor.ts';
 
 const log = createLogger('worker');
@@ -71,6 +73,19 @@ export async function runWorker(): Promise<void> {
   const notify = (level: 'info' | 'warn', message: string) => ingest.push(envelope('system', { type: 'system', level, message }));
 
   const songs = new SongService({ db, notify, reply: (t) => reply(t), onChange: () => http?.broadcastSongs() });
+  // 유튜브 밖 재생 금지 곡용 유튜브 창 (엣지/크롬)
+  const ytWindow = new WindowPlayer({
+    dataDir,
+    debugPort: config.port + 1,
+    enabled: () => songs.policy().windowFallback,
+    always: () => songs.policy().playbackMode === 'window',
+    localUrl: (id) => `http://127.0.0.1:${config.port}/media/${id}?key=${encodeURIComponent(overlayKey)}`,
+    report: (r) => songs.engine.report(WINDOW_ID, r),
+    onStatus: () => http?.broadcastSongs(),
+    extraArgs: process.env.LOCALBOT_BROWSER_ARGS?.split(' ').filter(Boolean),
+  });
+  songs.attachWindowPlayer(ytWindow);
+
   const roulette = new RouletteService({ db, reply: (t) => reply(t), onChange: () => http?.broadcastRoulette() });
 
   const commands = new CommandRouter(reply);
@@ -125,6 +140,7 @@ export async function runWorker(): Promise<void> {
   function shutdown() {
     log.info('shutting down');
     songs.stop();
+    void ytWindow.shutdown();
     http?.stop();
     db.close();
     process.exit(EXIT.OK);

@@ -52,6 +52,20 @@ export function Overlays({ app }: { app: AppState }) {
         );
       })}
       <section>
+        <h2>
+          <span style={{ color: 'var(--text)', fontSize: 15 }}>📺 유튜브 창 (외부 재생 금지 곡)</span>
+          <span className={`badge ${app.songs!.windowPlayer === 'playing' ? 'ok' : ''}`}>
+            {{ off: '꺼짐', unavailable: '엣지/크롬 없음', idle: '대기', starting: '여는 중', playing: '재생 중' }[app.songs!.windowPlayer]}
+          </span>
+        </h2>
+        <div className="muted small" style={{ lineHeight: 1.8 }}>
+          애니 OP·음반사 곡처럼 <b>유튜브 밖 재생이 막힌 곡</b>은 LocalBot이 작은 <b>"LocalBot 유튜브 플레이어"</b> 창(엣지/크롬)을 띄워 재생합니다.<br />
+          · OBS에서 <b>데스크톱 오디오</b>를 쓰면 따로 할 것 없음 — 그대로 방송에 나갑니다.<br />
+          · 따로 잡으려면: OBS 소스 <b>+ → 응용 프로그램 오디오 캡처</b> → 창: <b>LocalBot 유튜브 플레이어</b> → 창 일치 우선순위: <b>창 제목 일치</b><br />
+          · 그 창에서 유튜브에 로그인해 두면 유지됩니다 (유튜브 프리미엄이면 광고 없음). 창을 닫아도 다음 곡 때 다시 열립니다.
+        </div>
+      </section>
+      <section>
         <h2>보안</h2>
         <div className="row">
           <span className="grow muted">주소가 방송 화면에 노출됐다면 키를 새로 만드세요. 그 뒤 OBS의 주소도 바꿔야 합니다.</span>

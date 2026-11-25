@@ -7,7 +7,7 @@ import {
 import { getSetting, setSetting } from '../../core/db.ts';
 import { viewerKey } from '../../core/ingest.ts';
 import { createLogger } from '../../core/logger.ts';
-import { type EngineHost, type Outcome, PERMANENT_YT_ERRORS, type Pick, PlayerEngine } from './engine.ts';
+import { EMBED_BLOCKED_ERRORS, type EngineHost, type Outcome, PERMANENT_YT_ERRORS, type Pick, PlayerEngine } from './engine.ts';
 import { SongStore, toTrack } from './store.ts';
 import { checkOEmbed, fetchMix, findYouTubeId, type OEmbedResult, relatedQuery, type SearchHit, searchYouTube } from './youtube.ts';
 
@@ -48,6 +48,7 @@ export class SongService {
   private search: (q: string) => Promise<SearchHit[]>;
   private mix: (id: string) => Promise<SearchHit[]>;
   private filling: Promise<number> | null = null;
+  private window: { available(): boolean; always(): boolean; status: SongsState['windowPlayer']; send(cmd: any): void } | null = null;
   private fillAgain = false;
   /** 최근 재생곡 가수 (같은 가수 연속 방지) */
   private recentArtists: string[] = [];
@@ -97,6 +98,16 @@ export class SongService {
     const cutoff = this.now() - SKIP_ARTIST_MS;
     for (const [a, t] of this.skippedArtists) if (t < cutoff) this.skippedArtists.delete(a);
     return new Set(this.skippedArtists.keys());
+  }
+
+  /** 유튜브 창 플레이어 연결 (외부 재생 금지 영상용) */
+  attachWindowPlayer(w: { available(): boolean; always(): boolean; status: SongsState['windowPlayer']; send(cmd: any): void }) {
+    this.window = w;
+    this.engine.setWindowPlayer(w);
+    this.engine.reroute(); // 유튜브 창 모드면 OBS 플레이어 없이 바로 재생 시작
+  }
+  private get windowOk(): boolean {
+    return !!this.window?.available();
   }
 
   private autoStationId(): number | null {
@@ -197,8 +208,11 @@ export class SongService {
     return { ...DEFAULT_SONG_POLICY, ...getSetting<Partial<SongPolicy>>(this.deps.db, 'songs.policy', {}) };
   }
   setPolicy(patch: Partial<SongPolicy>) {
-    const next = { ...this.policy(), ...sanitizePolicy(patch) };
+    const prev = this.policy();
+    const next = { ...prev, ...sanitizePolicy(patch) };
     setSetting(this.deps.db, 'songs.policy', next);
+    // 재생 방식이 바뀌면 지금 곡을 새 플레이어로 이어서
+    if (prev.playbackMode !== next.playbackMode || prev.windowFallback !== next.windowFallback) this.engine.reroute();
     this.deps.onChange();
     return next;
   }
@@ -215,6 +229,7 @@ export class SongService {
       volume: this.engine.volume,
       playerOnline: this.engine.playerOnline,
       playerBlocked: this.engine.playerBlocked,
+      windowPlayer: this.window?.status ?? 'unavailable',
       fallbackUntil: this.engine.fallbackUntil,
       queue: this.store.queued(),
       pending: this.store.pending(),
@@ -255,6 +270,7 @@ export class SongService {
 
     let track = this.store.findTrack('youtube', videoId);
     if (track?.playable === false) return fail('재생할 수 없는 영상입니다');
+    if (track?.embedBlocked && !this.windowOk) return fail('유튜브 밖 재생이 막힌 영상입니다 (설정에서 "유튜브 창으로 재생"을 켜면 됩니다)');
     if (!track || track.title.startsWith('YouTube ')) {
       const o = await this.oembed(videoId);
       if (o.ok === false) {
@@ -330,7 +346,7 @@ export class SongService {
     let lastFail: RequestResult | null = null;
     for (const h of candidates.slice(0, 3)) {
       const known = this.store.findTrack('youtube', h.videoId);
-      if (known?.playable === false) continue;
+      if (known?.playable === false || (known?.embedBlocked && !this.windowOk)) continue;
       if (!known || known.title.startsWith('YouTube ')) {
         const o = await this.oembed(h.videoId);
         if (o.ok === false) {
@@ -583,7 +599,7 @@ export class SongService {
   private pickStationTrack(stationId: number, localOnly: boolean): Track | null {
     const s = this.store.station(stationId);
     if (!s) return null;
-    const rows = this.store.stationCandidates(stationId, localOnly);
+    const rows = this.store.stationCandidates(stationId, localOnly).filter((r) => this.windowOk || r.embed_blocked !== 1);
     if (s.kind === 'auto' && !localOnly) return this.pickAuto(s, rows);
     if (!rows.length) return null;
     if (s.mode === 'sequential') {
@@ -706,6 +722,13 @@ export class SongService {
         const t = this.store.track(trackId);
         if (!t) return;
         const max = this.policy().maxDurationSec;
+        if (!ok && typeof code === 'number' && EMBED_BLOCKED_ERRORS.has(code) && this.windowOk) {
+          // 유튜브 밖 재생 금지 → 실패로 빼지 않고 유튜브 창으로 재생하도록 표시만
+          this.store.setEmbedBlocked(trackId);
+          log.info(`"${t.title}" is embed-blocked → will play in YouTube window`);
+          this.deps.onChange();
+          return;
+        }
         if (!ok) {
           this.store.setPlayable(trackId, false, null);
           for (const it of this.store.failQueuedWithTrack(trackId, this.now(), `재생 불가 (${code})`)) {
@@ -723,6 +746,11 @@ export class SongService {
           }
         }
         this.deps.onChange();
+      },
+
+      onEmbedBlocked: (trackId) => {
+        this.store.setEmbedBlocked(trackId);
+        this.deps.notify('info', `유튜브 밖 재생이 막힌 곡이라 유튜브 창으로 재생합니다: ${this.store.track(trackId)?.title ?? ''}`);
       },
 
       onDurationKnown: (np, duration) => {
@@ -759,9 +787,10 @@ function sanitizePolicy(p: Partial<SongPolicy>): Partial<SongPolicy> {
   const out: Partial<SongPolicy> = {};
   const nums = ['maxDurationSec', 'perUserLimit', 'recentBlockMinutes', 'donationMinKRW', 'donationPriorityKRW', 'stationNoRepeat'] as const;
   for (const k of nums) if (p[k] !== undefined && Number.isFinite(Number(p[k]))) out[k] = Math.max(0, Math.floor(Number(p[k])));
-  const bools = ['open', 'allowChat', 'allowSearch', 'allowDonation', 'dedupQueue', 'approvalMode', 'interruptStation'] as const;
+  const bools = ['open', 'allowChat', 'allowSearch', 'allowDonation', 'windowFallback', 'dedupQueue', 'approvalMode', 'interruptStation'] as const;
   for (const k of bools) if (typeof p[k] === 'boolean') out[k] = p[k];
   if (p.permission && ['everyone', 'subscriber', 'manager'].includes(p.permission)) out.permission = p.permission;
+  if (p.playbackMode === 'window' || p.playbackMode === 'obs') out.playbackMode = p.playbackMode;
   if (Array.isArray(p.blacklistVideos)) out.blacklistVideos = p.blacklistVideos.map((v) => findYouTubeId(String(v)) ?? String(v).trim()).filter(Boolean);
   if (Array.isArray(p.blacklistKeywords)) out.blacklistKeywords = p.blacklistKeywords.map((v) => String(v).trim()).filter(Boolean);
   return out;

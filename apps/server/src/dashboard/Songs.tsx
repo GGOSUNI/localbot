@@ -79,7 +79,8 @@ function NowCard({ s }: { s: SongsState }) {
                 ? <a href={`https://youtu.be/${np.track.ref}`} target="_blank" rel="noreferrer" style={{ color: 'inherit', textDecoration: 'none' }}>{np.track.title}</a>
                 : np.track.title}
             </div>
-            <div className="muted">{np.kind === 'request' ? `🙋 ${np.requesterName ?? '익명'}님 신청` : '📻 스테이션'}{s.paused && ' · 일시정지됨'}</div>
+            <div className="muted">{np.kind === 'request' ? `🙋 ${np.requesterName ?? '익명'}님 신청` : '📻 스테이션'}{s.paused && ' · 일시정지됨'}
+              {np.track.embedBlocked && s.windowPlayer !== 'off' && <span className="badge wait" style={{ marginLeft: 6 }} title="유튜브 밖 재생이 막힌 곡이라 유튜브 창에서 재생합니다">📺 유튜브 창</span>}</div>
             <div className="bar"><i style={{ width: dur ? `${Math.min(100, (pos / dur) * 100)}%` : '0' }} /></div>
             <div className="muted small">{fmtTime(pos)} / {fmtTime(dur)}</div>
           </div>
@@ -252,6 +253,13 @@ function PolicyCard({ p }: { p: SongPolicy }) {
         {sw('dedupQueue', '대기열 중복 곡 막기')}
         {sw('approvalMode', '승인 모드 (내가 승인해야 대기열에 들어감)')}
         {sw('interruptStation', '신청곡이 오면 스테이션 곡 바로 끊기')}
+        <label className="f"><span>재생 방식</span>
+          <select value={p.playbackMode} onChange={(e) => set({ playbackMode: e.target.value as SongPolicy['playbackMode'] })}>
+            <option value="window">유튜브 창 (추천 · 막힌 곡 없음)</option>
+            <option value="obs">OBS 플레이어 소스</option>
+          </select>
+        </label>
+        {p.playbackMode === 'obs' && sw('windowFallback', '외부 재생 금지 곡만 유튜브 창으로', '애니 OP·음반사 곡처럼 외부 재생이 막힌 영상(150)을 엣지/크롬 창으로 재생')}
         <label className="f" style={{ gridTemplateColumns: '1fr' }}>
           <span>금지 키워드 <span className="muted small">(쉼표로 구분, 제목에 포함되면 거절)</span></span>
           <input defaultValue={p.blacklistKeywords.join(', ')} key={p.blacklistKeywords.join()}

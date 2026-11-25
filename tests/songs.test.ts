@@ -758,3 +758,51 @@ test('신청곡 영상이 재생 금지(150)면 같은 곡의 다른 영상으�
   expect(svc.store.queued()[0]!.requesterName).toBe('b');
   expect(replies.at(-1)).toContain('다른 영상으로 바꿨어요');
 });
+
+describe('유튜브 창 하나로만 재생 (기본 모드)', () => {
+  function setupWin() {
+    const dir = mkdtempSync(join(tmpdir(), 'lb-winmode-'));
+    dirs.push(dir);
+    const db = openDatabase(join(dir, 'bot.db'), join(dir, 'backups'));
+    const svc = new SongService({
+      db, notify: () => {}, reply: () => {}, onChange: () => {}, search: async () => [], mix: async () => [],
+      oembed: async (id) => ({ ok: true, title: `곡 ${id}`, author: null }),
+    });
+    const cmds: any[] = [];
+    svc.attachWindowPlayer({ available: () => true, always: () => svc.policy().playbackMode === 'window', status: 'idle', send: (c) => cmds.push(c) });
+    const seq = () => cmds.filter((c) => c.op === 'play').at(-1)!.seq;
+    const report = (r: any) => svc.engine.report('youtube-window', r);
+    return { svc, cmds, seq, report };
+  }
+
+  test('OBS 플레이어 없이도 신청곡이 유튜브 창에서 재생되고 다음 곡으로 넘어감', async () => {
+    const { svc, cmds, seq, report } = setupWin();
+    expect(svc.engine.playerOnline).toBe(true);
+    await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
+    await svc.request({ videoId: V(2), viewer: viewer('b'), via: 'chat' });
+    expect(cmds.at(-1)).toMatchObject({ op: 'play', track: { ref: V(1) } });
+    expect(cmds.some((c) => c.op === 'prefetch')).toBe(false); // 막힌 곡이 없으니 미리 확인 안 함
+    report({ type: 'player.hb', seq: seq(), state: 'ad', time: 0, duration: null }); // 광고
+    report({ type: 'player.hb', seq: seq(), state: 'playing', time: 3, duration: 200 });
+    report({ type: 'player.ended', seq: seq() });
+    expect(svc.engine.np?.track.ref).toBe(V(2));
+    expect(cmds.at(-1)).toMatchObject({ op: 'play', track: { ref: V(2) } });
+  });
+
+  test('재생 금지(150) 걱정 없음: 창 모드에서는 OBS 쪽으로 절대 안 보냄', async () => {
+    const { svc, cmds } = setupWin();
+    const obs: any[] = [];
+    svc.engine.addPlayer('obs', (m) => obs.push(m));
+    await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
+    expect(cmds.at(-1)).toMatchObject({ op: 'play', track: { ref: V(1) } });
+    expect(obs.filter((m) => m.type === 'player.cmd' && m.cmd.op === 'play')).toHaveLength(0);
+  });
+
+  test('광고가 길어도 멈춘 걸로 치지 않음', async () => {
+    const { svc, seq, report } = setupWin();
+    await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
+    for (let i = 0; i < 5; i++) report({ type: 'player.hb', seq: seq(), state: 'ad', time: 0, duration: null });
+    svc.engine.tick();
+    expect(svc.engine.np?.track.ref).toBe(V(1));
+  });
+});

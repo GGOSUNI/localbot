@@ -157,4 +157,9 @@ export const migrations: { version: number; name: string; sql: string }[] = [
     name: 'queue_query',
     sql: `ALTER TABLE queue ADD COLUMN query TEXT;`,
   },
+  {
+    version: 4,
+    name: 'tracks_embed_blocked',
+    sql: `ALTER TABLE tracks ADD COLUMN embed_blocked INTEGER NOT NULL DEFAULT 0;`,
+  },
 ];

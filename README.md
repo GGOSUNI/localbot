@@ -3,7 +3,7 @@
 **`LocalBot.exe` 하나, 채널 주소 붙여넣기 하나로 끝.**
 서버·회원가입·API 키 없이 내 PC에서 돌아가는 치지직 봇입니다. 신청곡, 자동 스테이션, 룰렛, OBS 오버레이를 한 번에.
 
-> ⬇ **[LocalBot v0.5.1 다운로드 (Windows, 52MB)](https://github.com/GGOSUNI/localbot/raw/download/LocalBot-v0.5.1-win-x64.zip)** — zip을 풀고 `LocalBot.exe`를 더블클릭
+> ⬇ **[LocalBot v0.6.0 다운로드 (Windows, 52MB)](https://github.com/GGOSUNI/localbot/raw/download/LocalBot-v0.6.0-win-x64.zip)** — zip을 풀고 `LocalBot.exe`를 더블클릭
 
 ---
 
@@ -28,8 +28,13 @@
 ### 🤖 봇 답장 (치지직 공식 연결)
 대시보드에서 **"치지직으로 로그인"** → 동의. 키 입력 없이 봇이 채팅방에 직접 답합니다.
 
-### 📺 OBS 오버레이
-신청곡 플레이어 · 현재 곡 · 룰렛 — 대시보드에서 주소 복사해서 브라우저 소스로 추가
+### 📺 유튜브 창으로 재생 — 막히는 곡 없음
+신청곡은 LocalBot이 띄우는 작은 **"LocalBot 유튜브 플레이어"** 창(엣지/크롬)에서 진짜 youtube.com으로 재생합니다.
+애니 OP·음반사 곡처럼 **다른 사이트 재생이 막힌 영상(오류 150)도 전부 재생**됩니다. OBS는 데스크톱 오디오면 그대로, 따로 잡으려면 응용 프로그램 오디오 캡처로 그 창을.
+(그 창에서 유튜브에 로그인해 두면 유지 · 프리미엄이면 광고 없음)
+
+### 🖼 OBS 오버레이
+현재 곡 · 룰렛 — 대시보드에서 주소 복사해서 브라우저 소스로 추가
 
 ---
 

@@ -5,7 +5,7 @@ import type { NowPlaying, QueueItem, QueueStatus, Station, Track, TrackSource } 
 
 type TrackRow = {
   id: number; source: TrackSource; ref: string; title: string; artist: string | null;
-  duration_sec: number | null; playable: number | null; last_played_at: number | null;
+  duration_sec: number | null; playable: number | null; last_played_at: number | null; embed_blocked?: number;
 };
 type QueueRow = {
   id: number; track_id: number; requester_key: string | null; requester_name: string | null; priority: number;
@@ -18,6 +18,7 @@ export function toTrack(r: TrackRow): Track {
   return {
     id: r.id, source: r.source, ref: r.ref, title: r.title, artist: r.artist,
     durationSec: r.duration_sec, playable: r.playable === null ? null : r.playable === 1,
+    embedBlocked: r.embed_blocked === 1,
   };
 }
 
@@ -50,6 +51,10 @@ export class SongStore {
   setPlayable(id: number, playable: boolean, durationSec: number | null) {
     this.db.query('UPDATE tracks SET playable = ?, duration_sec = COALESCE(?, duration_sec) WHERE id = ?')
       .run(playable ? 1 : 0, durationSec, id);
+  }
+  /** 유튜브 밖 재생 금지 → 유튜브 창으로만 재생 가능 (확인된 것으로 처리해 다시 미리 확인하지 않음) */
+  setEmbedBlocked(id: number) {
+    this.db.query('UPDATE tracks SET embed_blocked = 1, playable = 1 WHERE id = ?').run(id);
   }
   setDuration(id: number, durationSec: number) {
     this.db.query('UPDATE tracks SET duration_sec = ? WHERE id = ?').run(durationSec, id);

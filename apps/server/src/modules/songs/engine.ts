@@ -25,6 +25,17 @@ export const WATCHDOG = {
 
 /** YouTube 에러 중 다시 시도해도 소용없는 것 (영상 없음·퍼가기 금지) */
 export const PERMANENT_YT_ERRORS = new Set([2, 100, 101, 150]);
+/** 유튜브 밖 재생 금지 → 유튜브 창에서는 재생됨 */
+export const EMBED_BLOCKED_ERRORS = new Set([101, 150]);
+
+/** 유튜브 창 플레이어 (window-player.ts) — 엔진이 보기엔 플레이어 하나 */
+export interface WindowPlayerLike {
+  available(): boolean;
+  /** 모든 곡을 이 창으로 재생하는 모드인지 */
+  always(): boolean;
+  send(cmd: PlayerCommand): void;
+}
+export const WINDOW_ID = 'youtube-window';
 
 export type Pick =
   | { kind: 'request'; queueId: number; track: Track; requesterName: string | null }
@@ -40,6 +51,8 @@ export interface EngineHost {
   onStarted(np: NowPlaying): void;
   onFinished(np: NowPlaying, outcome: Outcome, reason: string | null, code?: number | string): void;
   onVerified(trackId: number, ok: boolean, duration: number | null, code?: number | string): void;
+  /** 재생 금지 영상으로 판명 → 유튜브 창으로 재생하도록 기록 */
+  onEmbedBlocked(trackId: number): void;
   /** 재생 중 실제 길이가 확인됐을 때. 'skip'을 돌려주면 너무 긴 곡으로 건너뜀 */
   onDurationKnown(np: NowPlaying, duration: number): 'ok' | 'skip';
   notify(level: 'info' | 'warn', message: string): void;
@@ -68,8 +81,33 @@ export class PlayerEngine {
   private ytFails = 0;
   private lastPersist = 0;
   private prefetching: number | null = null;
+  private window: WindowPlayerLike | null = null;
+  /** 지금 곡을 내는 플레이어 (마스터 id 또는 WINDOW_ID) */
+  private route: string | null = null;
 
   constructor(private host: EngineHost) {}
+
+  setWindowPlayer(w: WindowPlayerLike | null) {
+    this.window = w;
+  }
+  /** 유튜브 창 하나로 모든 곡을 재생하는 모드 (OBS 플레이어 없이도 동작) */
+  private get windowAll(): boolean {
+    return !!this.window?.available() && this.window.always();
+  }
+  /** 소리를 낼 수 있는 플레이어가 있는지 */
+  private get canPlay(): boolean {
+    return !!this.master || this.windowAll;
+  }
+  /** 재생 방식이 바뀌었거나 창 플레이어가 막 연결됐을 때: 지금 곡을 새 경로로 다시 (또는 시작) */
+  reroute() {
+    if (!this.canPlay) return this.host.changed();
+    if (this.np) this.sendPlay(this.np.position, true);
+    else this.next();
+    this.host.changed();
+  }
+  get playingInWindow(): boolean {
+    return this.route === WINDOW_ID && !!this.np;
+  }
 
   get master(): PlayerConn | null {
     return this.players[0] ?? null;
@@ -79,7 +117,7 @@ export class PlayerEngine {
     return this.blocked && !!this.np;
   }
   get playerOnline(): boolean {
-    return this.players.length > 0;
+    return this.canPlay;
   }
 
   /** 워커 재시작 후 DB에서 복원. 플레이어가 붙으면 같은 위치부터 이어서 재생 */
@@ -104,7 +142,9 @@ export class PlayerEngine {
     if (wasMaster) {
       log.warn('master player disconnected');
       const next = this.master;
-      if (next) {
+      if (next && this.route === WINDOW_ID) {
+        next.send({ type: 'player.role', master: true }); // 유튜브 창은 계속 재생
+      } else if (next) {
         next.send({ type: 'player.role', master: true });
         this.onMasterReady();
       } else {
@@ -116,24 +156,32 @@ export class PlayerEngine {
 
   private onMasterReady() {
     this.prefetching = null;
+    if (this.np && this.route === WINDOW_ID) return; // 유튜브 창에서 재생 중 → 그대로
     if (this.np) this.sendPlay(this.np.position);
     else this.next();
   }
 
   // ── 플레이어 보고 처리 ──
   report(playerId: string, r: PlayerReport) {
-    if (playerId !== this.master?.id) return; // 모니터(보조) 플레이어의 보고는 무시
     const t = this.host.now();
 
     if (r.type === 'player.verified') {
+      if (playerId !== this.master?.id) return;
       this.prefetching = null;
       this.host.onVerified(r.trackId, r.ok, r.duration, r.code);
       this.prefetch();
       return;
     }
-    if (!this.np || r.seq !== this.seq) return; // 이전 곡에 대한 늦은 보고
+    // 지금 곡을 내는 플레이어의 보고만 (보조 플레이어·이전 곡의 늦은 보고 무시)
+    if (playerId !== (this.route ?? this.master?.id)) return;
+    if (!this.np || r.seq !== this.seq) return;
 
     if (r.type === 'player.hb') {
+      if (r.state === 'ad') {
+        // 유튜브 창 광고 중: 멈춘 게 아님
+        this.lastProgressAt = t;
+        return;
+      }
       const wasBlocked = this.blocked;
       this.blocked = r.state === 'blocked';
       if (wasBlocked !== this.blocked) this.host.changed();
@@ -163,13 +211,24 @@ export class PlayerEngine {
       }
       return this.finish('played', null);
     }
-    if (r.type === 'player.error') return this.fail(`재생 오류 (${r.code})`, r.code);
+    if (r.type === 'player.error') {
+      // 유튜브 밖 재생 금지 영상 → 실패로 넘기지 않고 유튜브 창으로 같은 위치부터
+      if (typeof r.code === 'number' && EMBED_BLOCKED_ERRORS.has(r.code) && this.np.track.source === 'youtube' && this.window?.available()) {
+        log.info(`"${this.np.track.title}" is embed-blocked (${r.code}) → YouTube window`);
+        this.host.onEmbedBlocked(this.np.track.id);
+        this.np.track = { ...this.np.track, embedBlocked: true };
+        this.sendPlay(this.lastTime, true);
+        this.host.changed();
+        return;
+      }
+      return this.fail(`재생 오류 (${r.code})`, r.code);
+    }
   }
 
   /** 1초마다 호출. 워치독 */
   tick() {
     const np = this.np;
-    if (!np || this.paused || !this.master || this.blocked) return;
+    if (!np || this.paused || !this.canPlay || this.blocked) return;
     const t = this.host.now();
     const stalled =
       this.lastProgressAt === null
@@ -204,7 +263,7 @@ export class PlayerEngine {
   // ── 조작 ──
   /** 큐가 바뀌었을 때: 놀고 있으면 시작, 스테이션 곡 중이면 (설정에 따라) 신청곡으로 전환 */
   kick(interruptStation: boolean) {
-    if (!this.master) return this.host.changed();
+    if (!this.canPlay) return this.host.changed();
     if (!this.np) return this.next();
     if (this.np.kind === 'station' && interruptStation) return this.finish('interrupted', null);
     this.prefetch();
@@ -214,10 +273,16 @@ export class PlayerEngine {
     if (this.np) this.finish('skipped', reason);
   }
 
+  /** 지금 곡을 내는 플레이어에게 */
+  private toRoute(cmd: PlayerCommand) {
+    if (this.route === WINDOW_ID) this.window?.send(cmd);
+    else this.master?.send({ type: 'player.cmd', cmd });
+  }
+
   pause() {
     if (this.paused) return;
     this.paused = true;
-    this.master?.send({ type: 'player.cmd', cmd: { op: 'pause', seq: this.seq } });
+    this.toRoute({ op: 'pause', seq: this.seq });
     this.host.persist(this.np, this.paused, this.volume);
     this.host.changed();
   }
@@ -227,22 +292,23 @@ export class PlayerEngine {
     this.paused = false;
     this.lastProgressAt = null;
     this.playSentAt = this.host.now();
-    this.master?.send({ type: 'player.cmd', cmd: { op: 'resume', seq: this.seq } });
+    this.toRoute({ op: 'resume', seq: this.seq });
     this.host.persist(this.np, this.paused, this.volume);
     this.host.changed();
-    if (!this.np && this.master) this.next();
+    if (!this.np && this.canPlay) this.next();
   }
 
   setVolume(v: number) {
     this.volume = Math.max(0, Math.min(100, Math.round(v)));
     for (const p of this.players) p.send({ type: 'player.cmd', cmd: { op: 'volume', volume: this.volume } });
+    this.window?.send({ op: 'volume', volume: this.volume });
     this.host.persist(this.np, this.paused, this.volume);
     this.host.changed();
   }
 
   /** 현재 곡이 큐에서 지워졌을 때 등, 다음 곡으로 */
   next() {
-    if (!this.master) return this.host.changed();
+    if (!this.canPlay) return this.host.changed();
     const t = this.host.now();
     if (this.fallbackUntil && t >= this.fallbackUntil) {
       this.fallbackUntil = null;
@@ -253,7 +319,9 @@ export class PlayerEngine {
     if (!pick) {
       this.np = null;
       this.seq++;
-      this.master.send({ type: 'player.cmd', cmd: { op: 'stop', seq: this.seq } });
+      this.master?.send({ type: 'player.cmd', cmd: { op: 'stop', seq: this.seq } });
+      if (this.route === WINDOW_ID) this.window?.send({ op: 'stop', seq: this.seq });
+      this.route = null;
       this.host.persist(null, this.paused, this.volume);
       this.host.changed();
       return;
@@ -279,7 +347,7 @@ export class PlayerEngine {
   /** 다음 곡을 숨은 플레이어로 미리 불러 재생 가능 여부를 확인 */
   prefetch() {
     const m = this.master;
-    if (!m) return;
+    if (!m || this.windowAll) return; // 유튜브 창 모드에서는 미리 확인할 필요 없음 (막힌 곡이 없음)
     const t = this.host.peekUnverified();
     if (!t || t.id === this.prefetching || t.id === this.np?.track.id) return;
     this.prefetching = t.id;
@@ -290,7 +358,7 @@ export class PlayerEngine {
   private sendPlay(position: number, isReload = false) {
     const np = this.np;
     const m = this.master;
-    if (!np || !m) return;
+    if (!np || !this.canPlay) return;
     this.seq++;
     this.playSentAt = this.host.now();
     this.lastProgressAt = null;
@@ -301,7 +369,17 @@ export class PlayerEngine {
       op: 'play', seq: this.seq, position, volume: this.volume, paused: this.paused,
       track: { id: np.track.id, source: np.track.source, ref: np.track.ref, title: np.track.title },
     };
-    m.send({ type: 'player.cmd', cmd });
+    const useWindow = this.windowAll || !m || (np.track.source === 'youtube' && !!np.track.embedBlocked && !!this.window?.available());
+    if (useWindow) {
+      // 소리가 겹치지 않게 OBS 플레이어는 멈추고 유튜브 창으로
+      m?.send({ type: 'player.cmd', cmd: { op: 'stop', seq: this.seq } });
+      this.window!.send(cmd);
+      this.route = WINDOW_ID;
+    } else {
+      if (this.route === WINDOW_ID) this.window?.send({ op: 'stop', seq: this.seq });
+      m!.send({ type: 'player.cmd', cmd });
+      this.route = m!.id;
+    }
   }
 
   private fail(reason: string, code?: number | string, severe = false) {

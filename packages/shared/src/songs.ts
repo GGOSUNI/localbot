@@ -12,6 +12,8 @@ export interface Track {
   durationSec: number | null;
   /** null = 아직 검증 안 됨 */
   playable: boolean | null;
+  /** 유튜브 밖 재생 금지(150/101) → 유튜브 창으로 재생 */
+  embedBlocked?: boolean;
 }
 
 export type QueueStatus =
@@ -69,6 +71,10 @@ export interface SongPolicy {
   blacklistVideos: string[];
   blacklistKeywords: string[];
   stationNoRepeat: number;
+  /** 외부 재생 금지 영상은 유튜브 창(엣지/크롬)으로 재생 */
+  windowFallback: boolean;
+  /** window: 모든 곡을 유튜브 창 하나로 (OBS 플레이어 불필요) · obs: OBS 플레이어로, 막힌 곡만 창으로 */
+  playbackMode: 'window' | 'obs';
 }
 
 export const DEFAULT_SONG_POLICY: SongPolicy = {
@@ -88,6 +94,8 @@ export const DEFAULT_SONG_POLICY: SongPolicy = {
   blacklistVideos: [],
   blacklistKeywords: [],
   stationNoRepeat: 20,
+  windowFallback: true,
+  playbackMode: 'window',
 };
 
 export interface SongsState {
@@ -96,6 +104,8 @@ export interface SongsState {
   volume: number;
   /** 플레이어(OBS 소스 등)가 연결되어 있는지 */
   playerOnline: boolean;
+  /** 유튜브 창 플레이어 상태 */
+  windowPlayer: 'off' | 'unavailable' | 'idle' | 'starting' | 'playing';
   /** 브라우저 자동재생 차단 → 플레이어 탭에서 클릭 필요 */
   playerBlocked: boolean;
   /** YouTube 연속 실패로 로컬 비상 스테이션 사용 중 */
@@ -120,7 +130,7 @@ export type PlayerCommand =
 
 /** 플레이어 → 서버 보고 */
 export type PlayerReport =
-  | { type: 'player.hb'; seq: number; state: 'loading' | 'playing' | 'paused' | 'buffering' | 'blocked'; time: number; duration: number | null }
+  | { type: 'player.hb'; seq: number; state: 'loading' | 'playing' | 'paused' | 'buffering' | 'blocked' | 'ad'; time: number; duration: number | null }
   | { type: 'player.ended'; seq: number }
   | { type: 'player.error'; seq: number; code: number | string }
   | { type: 'player.verified'; trackId: number; ok: boolean; duration: number | null; code?: number | string };
