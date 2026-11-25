@@ -1,7 +1,7 @@
-export const VERSION = '0.4.2';
+export const VERSION = '0.5.0';
 
 /** 배포한 로그인 중계 서버 주소. 예) https://localbot-relay.ggosuni.workers.dev */
-export const RELAY_URL = '';
+export const RELAY_URL = 'https://localbot-relay.ggosuni.workers.dev';
 
 export const config = {
   host: process.env.LOCALBOT_HOST ?? '127.0.0.1',
