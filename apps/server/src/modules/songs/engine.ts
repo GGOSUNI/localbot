@@ -13,10 +13,8 @@ export const WATCHDOG = {
   firstProgressGraceMs: 30_000,
   /** 멈춰서 다시 불러온 뒤 기다리는 시간 (무음이 길어지지 않게 짧게) */
   reloadGraceMs: 15_000,
-  /** 재생 중 위치가 이만큼 안 움직이면 멈춘 것 */
-  stallMs: 8_000,
-  /** 멈춤 시 같은 위치에서 다시 불러오는 횟수 */
-  maxReloads: 1,
+  /** 재생 중 위치가 이만큼 안 움직이면 멈춘 것 (유튜브 버퍼링은 기다려 줌) */
+  stallMs: 20_000,
   /** YouTube 연속 실패 몇 번이면 로컬 비상 스테이션으로 */
   ytFailsForFallback: 2,
   fallbackMs: 3 * 60_000,
@@ -255,14 +253,9 @@ export class PlayerEngine {
     const reached = Math.max(this.lastTime, this.maxTime);
     if (np.duration && reached >= np.duration - 8) return this.finish('played', null);
 
-    if (this.reloads < WATCHDOG.maxReloads) {
-      this.reloads++;
-      // 조용히 다시 불러옴 (채팅·피드에 안 띄움). 위치는 실제로 들은 데까지
-      log.warn(`stall detected — reloading "${np.track.title}" at ${reached.toFixed(1)}s`);
-      this.sendPlay(reached, true);
-      return;
-    }
-    // 다시 불러와도 아예 시작조차 못 했다면 영상 하나의 문제가 아니라 YouTube 자체가 안 되는 것 → 바로 비상 전환
+    // 다시 불러오지 않음: 같은 곡을 또 듣게 하지 않고 바로 다음 곡으로.
+    // 아예 시작조차 못 했다면 영상 하나의 문제가 아니라 YouTube 자체가 안 되는 것 → 바로 비상 전환
+    log.warn(`stall detected at ${reached.toFixed(1)}s — skipping "${np.track.title}"`);
     const neverStarted = this.lastProgressAt === null && np.position < 1;
     this.fail(neverStarted ? '재생이 시작되지 않음' : '재생이 멈춤', undefined, neverStarted);
   }

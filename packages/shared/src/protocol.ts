@@ -60,7 +60,22 @@ export interface TtsSettings {
   maxQueue: number;
 }
 export interface TtsItem { id: number; kind: 'chat' | 'donation'; nickname: string | null; amountKRW: number; message: string; speech: string; at: number }
-export interface TtsState { settings: TtsSettings; available: boolean; speaking: TtsItem | null; queue: TtsItem[]; voices: string[] }
+export interface TtsVoiceOption { id: string; label: string; group: string }
+export interface TtsState {
+  settings: TtsSettings;
+  available: boolean;
+  speaking: TtsItem | null;
+  queue: TtsItem[];
+  /** 윈도우 내장 목소리 ("이름|언어") */
+  voices: string[];
+  /** 고를 수 있는 목소리 전체 (인터넷 + 윈도우) */
+  voiceOptions: TtsVoiceOption[];
+  /** 지금 설정된 목소리 id (빈 값이면 기본 목소리로 채워짐) */
+  voiceSelected: string;
+  /** 마지막으로 실제로 읽은 목소리 / 인터넷 목소리가 실패해서 바꾼 이유 */
+  voiceUsed: string | null;
+  voiceError: string | null;
+}
 
 export type ServerMessage =
   | { type: 'hello'; workerStartedAt: number; recent: Envelope[]; connection: ConnectionState; songs: SongsState; roulette: RouletteState; official: OfficialStatus }

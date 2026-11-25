@@ -31,7 +31,7 @@ export function TtsPage({ t }: { t: TtsState }) {
           <div className="alert" style={{ marginBottom: 12 }}>이 PC에서는 음성을 낼 수 없습니다 (윈도우에서만 동작). 알림 카드만 표시됩니다.</div>
         )}
         <p className="muted small" style={{ marginTop: 0 }}>
-          시청자 채팅을 윈도우 내장 목소리로 <b>스피커에 바로</b> 읽습니다. OBS는 <b>데스크톱 오디오</b>에 그대로 잡혀요 (따로 추가할 소스 없음).
+          시청자 채팅을 자연스러운 목소리(기본: 선희)로 <b>스피커에 바로</b> 읽습니다. 인터넷 목소리가 안 되면 윈도우 목소리로 대신 읽어요. OBS는 <b>데스크톱 오디오</b>에 그대로 잡혀요 (따로 추가할 소스 없음).
           읽는 동안 노래 소리는 자동으로 줄어듭니다.
         </p>
 
@@ -117,14 +117,16 @@ export function TtsPage({ t }: { t: TtsState }) {
             <div className="form">
               <label className="field">
                 <span>목소리</span>
-                <select value={s.voice} onChange={(e) => save({ voice: e.target.value })}>
-                  <option value="">자동 (한국어 목소리)</option>
-                  {t.voices.map((v) => {
-                    const [name, lang] = v.split('|');
-                    return <option key={v} value={name}>{name} {lang ? `(${lang})` : ''}</option>;
-                  })}
+                <select value={t.voiceSelected} onChange={(e) => save({ voice: e.target.value })}>
+                  {[...new Set(t.voiceOptions.map((v) => v.group))].map((g) => (
+                    <optgroup key={g} label={g}>
+                      {t.voiceOptions.filter((v) => v.group === g).map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+                    </optgroup>
+                  ))}
                 </select>
               </label>
+              {t.voiceUsed && <div className="muted small">마지막으로 읽은 목소리: <b>{t.voiceUsed}</b></div>}
+              {t.voiceError && <div className="alert small">{t.voiceError}</div>}
               <label className="field">
                 <span>빠르기</span>
                 <input type="range" min={-10} max={10} defaultValue={s.rate} key={`r${s.rate}`} onPointerUp={(e) => save({ rate: Number(e.currentTarget.value) })} onKeyUp={(e) => save({ rate: Number(e.currentTarget.value) })} />
@@ -135,8 +137,8 @@ export function TtsPage({ t }: { t: TtsState }) {
                 <input type="range" min={0} max={100} defaultValue={s.volume} key={`v${s.volume}`} onPointerUp={(e) => save({ volume: Number(e.currentTarget.value) })} onKeyUp={(e) => save({ volume: Number(e.currentTarget.value) })} />
                 <b style={{ width: 28 }}>{s.volume}</b>
               </label>
-              {t.available && t.voices.length > 0 && !t.voices.some((v) => v.endsWith('|ko-KR')) && (
-                <div className="alert small">한국어 목소리가 없습니다 → 윈도우 설정 · 시간 및 언어 · 언어 · <b>한국어</b> 추가 (음성 포함)</div>
+              {t.voiceSelected.startsWith('sapi:') && t.available && t.voices.length > 0 && !t.voices.some((v) => v.endsWith('|ko-KR')) && (
+                <div className="alert small">한국어 윈도우 목소리가 없습니다 → 위에서 <b>선희</b> 같은 자연스러운 목소리를 고르세요</div>
               )}
             </div>
           </section>

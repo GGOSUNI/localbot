@@ -211,7 +211,6 @@ export class WindowPlayer {
   private maxT = 0;
   private dur: number | null = null;
   private sawMine = false;
-  private recovered = -1;
   private _status: Status;
   private visible = false;
   private lastFrameAt = 0;
@@ -403,15 +402,10 @@ export class WindowPlayer {
     // 끝까지 재생돼서 우리가 멈춰 둔 곡
     if (cur.track.source === 'youtube' && s.endedVid === cur.track.ref) return ended();
     if (!mine) {
+      // 유튜브가 다른 영상(자동재생·추천)으로 넘어감 → 이 곡은 끝난 걸로 (같은 곡 다시 틀지 않음)
       if (this.sawMine && cur.track.source === 'youtube') {
-        // 유튜브가 다른 영상(자동재생·추천)으로 넘어감: 거의 끝났으면 끝난 걸로, 아니면 원래 곡 그 위치로 되돌림
-        if (this.dur && this.maxT >= this.dur - 15) return ended();
-        if (this.recovered !== seq) {
-          this.recovered = seq;
-          log.warn(`page left "${cur.track.title}" at ${this.maxT.toFixed(0)}s → back`);
-          this.sawMine = false;
-          void this.play({ ...cur, position: this.maxT });
-        }
+        log.info(`page left "${cur.track.title}" at ${this.maxT.toFixed(0)}s → next`);
+        return ended();
       }
       return this.o.report({ type: 'player.hb', seq, state: 'loading', time: this.maxT, duration: null });
     }

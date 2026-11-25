@@ -230,20 +230,18 @@ describe('재생 엔진 — 장애 대응 (카오스)', () => {
     expect(svc.store.history()[0]!.reason).toBe('너무 긴 곡');
   });
 
-  test('#2 재생 중 멈춤 → 같은 위치에서 다시 불러오기 → 또 멈추면 다음 곡', async () => {
+  test('#2 재생 중 멈춤 → 다시 불러오지 않고 바로 다음 곡 (같은 곡 반복 없음)', async () => {
     const { svc, advance } = setup();
     const p = player(svc);
     await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
     await svc.request({ videoId: V(2), viewer: viewer('b'), via: 'chat' });
     p.hb(30);
     p.hb(31); // 진행 확인
-    advance(WATCHDOG.stallMs + 1000); // 위치가 안 움직임
-    expect(p.plays()).toBe(2);
-    expect(p.lastPlay()!.position).toBe(31); // 같은 곡 같은 위치
-    expect(p.lastPlay()!.track.ref).toBe(V(1));
-
-    advance(WATCHDOG.reloadGraceMs + 1000); // 다시 불러와도 진행이 없음
+    advance(WATCHDOG.stallMs - 2000); // 잠깐 버퍼링은 기다려 줌
+    expect(svc.engine.np?.track.ref).toBe(V(1));
+    advance(3000); // 위치가 계속 안 움직임
     expect(svc.engine.np?.track.ref).toBe(V(2));
+    expect(p.cmds().filter((c) => c.op === 'play' && c.track.ref === V(1))).toHaveLength(1);
     expect(svc.store.history()[0]).toMatchObject({ status: 'failed', reason: '재생이 멈춤' });
     expect(svc.engine.fallbackUntil).toBeNull(); // 중간에 멈춘 건 영상 문제일 수 있음 → 비상 전환 안 함
   });
@@ -258,9 +256,8 @@ describe('재생 엔진 — 장애 대응 (카오스)', () => {
     const p = player(svc);
     await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
     await svc.request({ videoId: V(2), viewer: viewer('b'), via: 'chat' });
-    advance(WATCHDOG.firstProgressGraceMs + 1000); // 시작 안 됨 → 재로드
-    advance(WATCHDOG.reloadGraceMs + 1000); // 또 안 됨
-    // 무음은 최대 (30 + 15)초
+    advance(WATCHDOG.firstProgressGraceMs + 1000); // 시작 안 됨 → 다시 불러오지 않고 바로 비상 전환
+    // 무음은 최대 30초
     expect(svc.engine.np?.track.source).toBe('local');
     expect(svc.store.queued().map((q) => q.track.ref)).toEqual([V(2)]);
     svc.engine.endFallback();
@@ -823,7 +820,7 @@ describe('유튜브 창 하나로만 재생 (기본 모드)', () => {
       report({ type: 'player.hb', seq: seq(), state: 'playing', time: t, duration: 200 });
     }
     // 끝나자마자 자동재생으로 딴 영상 → 위치 0, 진행 없음
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 25; i++) {
       clock.t += 1000;
       report({ type: 'player.hb', seq: seq(), state: 'loading', time: 0, duration: null });
       svc.engine.tick();
@@ -832,26 +829,25 @@ describe('유튜브 창 하나로만 재생 (기본 모드)', () => {
     expect(cmds.filter((c) => c.op === 'play' && c.track.ref === V(1))).toHaveLength(1); // 같은 곡 다시 안 틂
   });
 
-  test('곡 중간에 멈추면 조용히, 들은 위치부터 다시 (처음부터 아님)', async () => {
+  test('곡 중간에 멈추면 다시 불러오지 않고 다음 곡, "다시 불러옵니다" 알림 없음', async () => {
     const { svc, cmds, seq, report } = setupWin();
     const notes: string[] = [];
     (svc as any).deps.notify = (_l: string, m: string) => notes.push(m);
     const clock = { t: Date.now() };
     (svc.engine as any).host.now = () => clock.t;
     await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
+    await svc.request({ videoId: V(2), viewer: viewer('b'), via: 'chat' });
     for (let t = 0; t <= 100; t += 4) {
       clock.t += 4000;
       report({ type: 'player.hb', seq: seq(), state: 'playing', time: t, duration: 300 });
     }
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 25; i++) {
       clock.t += 1000;
-      report({ type: 'player.hb', seq: seq(), state: 'loading', time: 0, duration: null });
+      report({ type: 'player.hb', seq: seq(), state: 'buffering', time: 100, duration: 300 });
       svc.engine.tick();
     }
-    const plays = cmds.filter((c) => c.op === 'play');
-    expect(plays).toHaveLength(2);
-    expect(plays[1].track.ref).toBe(V(1));
-    expect(plays[1].position).toBe(100);
+    expect(svc.engine.np?.track.ref).toBe(V(2));
+    expect(cmds.filter((c) => c.op === 'play' && c.track.ref === V(1))).toHaveLength(1);
     expect(notes.some((n) => n.includes('다시 불러옵니다'))).toBe(false);
   });
 

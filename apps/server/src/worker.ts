@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Envelope } from '@localbot/shared';
 import { ChzzkOfficial } from './adapters/chzzk/official.ts';
 import { MockAdapter } from './adapters/mock.ts';
@@ -17,7 +18,7 @@ import { SongService } from './modules/songs/service.ts';
 import { WINDOW_ID } from './modules/songs/engine.ts';
 import { WindowPlayer } from './modules/songs/window-player.ts';
 import { TtsService } from './modules/tts/service.ts';
-import { WindowsSpeaker } from './modules/tts/speaker.ts';
+import { NaturalSpeaker, WindowsSpeaker } from './modules/tts/speaker.ts';
 import { ensureDashboardKey } from './supervisor.ts';
 
 const log = createLogger('worker');
@@ -90,7 +91,7 @@ export async function runWorker(): Promise<void> {
   });
   songs.attachWindowPlayer(ytWindow);
 
-  const tts = new TtsService(db, new WindowsSpeaker(), {
+  const tts = new TtsService(db, new NaturalSpeaker(new WindowsSpeaker(), join(dataDir, 'tts')), {
     duck: (on) => songs.engine.setDuck(on),
     onChange: () => http?.broadcastTts(),
   });

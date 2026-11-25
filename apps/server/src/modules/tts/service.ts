@@ -2,7 +2,8 @@ import type { Database } from 'bun:sqlite';
 import type { OverlayMessage, TtsItem, TtsState, Viewer } from '@localbot/shared';
 import { getSetting, setSetting } from '../../core/db.ts';
 import { createLogger } from '../../core/logger.ts';
-import type { Speaker } from './speaker.ts';
+import { ONLINE_VOICES } from './online.ts';
+import { normalizeVoice, type Speaker } from './speaker.ts';
 import { cleanMessage, DEFAULT_TTS, OLD_DEFAULT_TEMPLATES, sanitizeTts, speechFor, type TtsSettings } from './text.ts';
 
 const log = createLogger('tts');
@@ -49,7 +50,18 @@ export class TtsService {
   }
 
   state(): TtsState {
-    return { settings: this.settings(), available: this.speaker.available, speaking: this.speaking, queue: [...this.queue], voices: this.voiceList };
+    const settings = this.settings();
+    const windows = this.voiceList.map((v) => {
+      const [name, lang] = v.split('|');
+      return { id: `sapi:${name}`, label: `${name}${lang ? ` (${lang})` : ''}`, group: '윈도우 내장 (인터넷 없이)' };
+    });
+    return {
+      settings, available: this.speaker.available, speaking: this.speaking, queue: [...this.queue], voices: this.voiceList,
+      voiceOptions: [...ONLINE_VOICES.map((v) => ({ ...v, group: v.group === '구글' ? '구글' : '자연스러운 목소리 (인터넷)' })), ...windows],
+      voiceSelected: normalizeVoice(settings.voice),
+      voiceUsed: this.speaker.lastUsed ?? null,
+      voiceError: this.speaker.lastError ?? null,
+    };
   }
 
   onDonation(viewer: Viewer | null, amountKRW: number, text: string | undefined) {
