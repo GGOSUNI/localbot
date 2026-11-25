@@ -35,6 +35,8 @@ function setup(opts: { oembed?: Record<string, OEmbedResult>; dir?: string; db?:
     now: () => clock.t,
     random: () => 0.5,
     oembed: async (id) => opts.oembed?.[id] ?? { ok: true, title: `곡 ${id}`, author: null },
+    search: async () => [],
+    mix: async () => [],
     notify: (_l, m) => notes.push(m),
     reply: (m) => replies.push(m),
     onChange: () => {},
@@ -457,6 +459,7 @@ describe('곡 이름으로 신청 (검색)', () => {
       db, now: () => 1_800_000_000_000, notify: () => {}, reply: (t) => replies.push(t), onChange: () => {},
       oembed: async (id) => oembed[id] ?? { ok: true, title: `제목 ${id}`, author: null },
       search: hits(list),
+      mix: async () => [],
     });
     return { svc, replies };
   }
@@ -511,4 +514,93 @@ test('YouTube 검색 결과 페이지 파싱', async () => {
   ]);
   expect(parseSearchHtml('<html>nothing</html>')).toEqual([]);
   expect(parseDuration('4:29')).toBe(269);
+});
+
+describe('🎧 자동 스테이션 (YouTube 알고리즘)', () => {
+  const H = (n: number, dur = 200) => ({ videoId: V(n), title: `추천곡 ${n}`, author: '가수', durationSec: dur });
+
+  function setupAuto(opts: { mix?: (id: string) => any[]; search?: (q: string) => any[] } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'lb-auto-'));
+    dirs.push(dir);
+    const db = openDatabase(join(dir, 'bot.db'), join(dir, 'backups'));
+    const calls = { mix: [] as string[], search: [] as string[] };
+    const make = (d: string) => new SongService({
+      db, now: () => clock.t, random: () => 0, notify: () => {}, reply: () => {}, onChange: () => {},
+      oembed: async (id) => ({ ok: true, title: `곡 ${id}`, author: null }),
+      mix: async (id) => (calls.mix.push(id), opts.mix?.(id) ?? []),
+      search: async (q) => (calls.search.push(q), opts.search?.(q) ?? []),
+    });
+    const clock = { t: 1_800_000_000_000 };
+    return { svc: make(dir), make: () => make(dir), calls, clock };
+  }
+
+  test('설정 없이도 처음부터 자동 스테이션이 켜져 있음', () => {
+    const { svc } = setupAuto();
+    const auto = svc.store.stations().find((s) => s.kind === 'auto')!;
+    expect(svc.activeStationId()).toBe(auto.id);
+  });
+
+  test('기록이 없으면 인기곡 검색으로 채워서 바로 재생', async () => {
+    const { svc, calls } = setupAuto({ search: () => [H(1), H(2), H(3)] });
+    player(svc);
+    expect(svc.engine.np).toBeNull(); // 아직 비어 있음 → 채우기 시작
+    await svc.fillAuto();
+    expect(calls.search.length).toBeGreaterThan(0);
+    expect(svc.engine.np?.kind).toBe('station');
+    expect(svc.engine.np?.track.ref).toBe(V(1));
+  });
+
+  test('신청곡을 기준으로 YouTube 믹스를 이어 붙임 (라디오처럼)', async () => {
+    const { svc, calls } = setupAuto({ mix: (id) => (id === V(50) ? [H(51), H(52), H(53), H(54)] : []) });
+    const p = player(svc);
+    await svc.request({ videoId: V(50), viewer: viewer('a'), via: 'chat' });
+    p.hb(1);
+    p.ended(); // 신청곡 끝 → 대기열 빔 → 자동 스테이션
+    await svc.fillAuto();
+    expect(calls.mix).toContain(V(50));
+    expect(svc.engine.np?.track.ref).toBe(V(51));
+    p.hb(1);
+    p.ended();
+    expect(svc.engine.np?.track.ref).toBe(V(52)); // 순서대로 이어짐
+  });
+
+  test('믹스가 막히면 "비슷한 노래" 검색으로 대체, 너무 길거나 생방송은 제외', async () => {
+    const { svc, calls } = setupAuto({ search: () => [H(70, 3600), { ...H(71), durationSec: null }, H(72)] });
+    await svc.request({ videoId: V(60), viewer: viewer('a'), via: 'chat' }); // 플레이어 연결 전에 신청
+    const p = player(svc);
+    p.hb(1);
+    p.ended();
+    await svc.fillAuto();
+    expect(calls.mix).toContain(V(60));
+    expect(calls.search.at(-1)).toContain(V(60)); // 기준곡 제목으로 비슷한 노래 검색
+    expect(svc.engine.np?.track.ref).toBe(V(72));
+  });
+
+  test('사용자가 끄면 다시 켜지지 않음 (재시작 후에도)', () => {
+    const { svc, make } = setupAuto();
+    svc.activateStation(null);
+    expect(make().activeStationId()).toBeNull();
+  });
+
+  test('영상 하나의 문제(퍼가기 금지 150)는 YouTube 장애로 세지 않음', async () => {
+    const { svc } = setupAuto({ search: () => [H(1), H(2), H(3), H(4)] });
+    const p = player(svc);
+    await svc.fillAuto();
+    p.error(150);
+    p.error(150);
+    p.error(101);
+    expect(svc.engine.fallbackUntil).toBeNull();
+  });
+});
+
+test('YouTube 믹스 응답 파싱 / 비슷한 노래 검색어', async () => {
+  const { parseMix, relatedQuery } = await import('../apps/server/src/modules/songs/youtube.ts');
+  const data = { a: { b: [
+    { playlistPanelVideoRenderer: { videoId: 'seedseedsee', title: { simpleText: '기준곡' } } },
+    { playlistPanelVideoRenderer: { videoId: 'nextnextnex', title: { simpleText: '다음 곡' }, lengthText: { simpleText: '3:30' }, shortBylineText: { runs: [{ text: '가수' }] } } },
+    { playlistPanelVideoRenderer: { videoId: 'nextnextnex', title: { simpleText: '중복' } } },
+  ] } };
+  expect(parseMix(data, 'seedseedsee')).toEqual([{ videoId: 'nextnextnex', title: '다음 곡', author: '가수', durationSec: 210 }]);
+  expect(relatedQuery('BIBI - 나쁜년 (Official M/V)', 'BIBI - Topic')).toBe('BIBI 노래');
+  expect(relatedQuery('[MV] 아이유 - 밤편지', null)).toBe('아이유 - 밤편지');
 });

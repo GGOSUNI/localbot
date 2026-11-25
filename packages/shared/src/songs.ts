@@ -44,7 +44,8 @@ export interface NowPlaying {
 export interface Station {
   id: number;
   name: string;
-  kind: 'manual' | 'local' | 'popular';
+  /** auto: YouTube 알고리즘(믹스)으로 자동으로 채워지는 기본 스테이션 */
+  kind: 'manual' | 'local' | 'popular' | 'auto';
   mode: 'sequential' | 'shuffle';
   folder: string | null;
   trackCount: number;

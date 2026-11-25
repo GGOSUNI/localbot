@@ -292,10 +292,13 @@ function StationsCard({ s }: { s: SongsState }) {
         {s.stations.map((st) => <StationRow key={st.id} st={st} active={s.activeStationId === st.id} />)}
       </ul>
       {mode === null ? (
-        <div className="row" style={{ marginTop: 12 }}>
-          <button onClick={() => setMode('manual')}>+ YouTube 링크로 만들기</button>
-          <button onClick={() => setMode('local')}>+ 내 음악 폴더</button>
-        </div>
+        <details style={{ marginTop: 12 }}>
+          <summary className="muted small" style={{ cursor: 'pointer' }}>직접 만들기 (선택)</summary>
+          <div className="row" style={{ marginTop: 8 }}>
+            <button onClick={() => setMode('manual')}>+ YouTube 링크로 만들기</button>
+            <button onClick={() => setMode('local')}>+ 내 음악 폴더</button>
+          </div>
+        </details>
       ) : (
         <div className="form" style={{ marginTop: 12 }}>
           <input placeholder={mode === 'local' ? '이름 (예: 비상용 BGM)' : '이름 (예: 잔잔한 노래)'} value={name} onChange={(e) => setName(e.target.value)} />
@@ -311,9 +314,7 @@ function StationsCard({ s }: { s: SongsState }) {
           </div>
         </div>
       )}
-      {!s.stations.some((x) => x.kind === 'local') && (
-        <div className="muted small" style={{ marginTop: 10 }}>💡 내 음악 폴더 스테이션을 하나 만들어 두면, YouTube가 막혀도 음악이 끊기지 않습니다.</div>
-      )}
+
     </section>
   );
 }
@@ -321,7 +322,20 @@ function StationsCard({ s }: { s: SongsState }) {
 function StationRow({ st, active }: { st: Station; active: boolean }) {
   const [adding, setAdding] = useState(false);
   const [links, setLinks] = useState('');
-  const icon = st.kind === 'local' ? '💾' : st.kind === 'popular' ? '🔥' : '▶';
+  const icon = st.kind === 'local' ? '💾' : st.kind === 'popular' ? '🔥' : st.kind === 'auto' ? '' : '▶';
+  if (st.kind === 'auto') {
+    return (
+      <li style={{ flexWrap: 'wrap' }}>
+        <label className="row t" style={{ cursor: 'pointer' }}>
+          <input type="radio" checked={active} onChange={() => post(`/api/songs/stations/${st.id}/activate`)} />
+          <b>{st.name}</b> <span className="badge ok">추천</span>
+        </label>
+        <div className="muted small" style={{ width: '100%', paddingLeft: 24 }}>
+          방금 나온 곡을 기준으로 유튜브 알고리즘(믹스)이 추천하는 비슷한 곡을 계속 이어서 틀어 줍니다. 설정할 것 없음.
+        </div>
+      </li>
+    );
+  }
   return (
     <li style={{ flexWrap: 'wrap' }}>
       <label className="row t" style={{ cursor: 'pointer' }}>

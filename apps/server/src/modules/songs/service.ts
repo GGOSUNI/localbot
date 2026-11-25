@@ -9,18 +9,25 @@ import { viewerKey } from '../../core/ingest.ts';
 import { createLogger } from '../../core/logger.ts';
 import { type EngineHost, type Outcome, PERMANENT_YT_ERRORS, type Pick, PlayerEngine } from './engine.ts';
 import { SongStore, toTrack } from './store.ts';
-import { checkOEmbed, findYouTubeId, type OEmbedResult, type SearchHit, searchYouTube } from './youtube.ts';
+import { checkOEmbed, fetchMix, findYouTubeId, type OEmbedResult, relatedQuery, type SearchHit, searchYouTube } from './youtube.ts';
 
 const log = createLogger('songs');
 
 export const AUDIO_EXT = new Set(['.mp3', '.ogg', '.oga', '.opus', '.wav', '.flac', '.m4a', '.aac', '.webm']);
 const POPULAR_NAME = '인기 신청곡';
+const AUTO_NAME = '🎧 자동 (유튜브 추천)';
+const AUTO_BATCH = 10;
+const AUTO_REFILL_AT = 3;
+const AUTO_REFILL_COOLDOWN_MS = 60_000;
+const DEFAULT_AUTO_QUERIES = ['멜론 차트 1위 MV', '요즘 인기 가요 MV', '케이팝 히트곡 Official MV', '감성 발라드 MV', '신나는 노래 MV'];
 
 export interface SongDeps {
   db: Database;
   now?: () => number;
   oembed?: (videoId: string) => Promise<OEmbedResult>;
   search?: (query: string) => Promise<SearchHit[]>;
+  /** YouTube 믹스 (알고리즘 추천) */
+  mix?: (videoId: string) => Promise<SearchHit[]>;
   random?: () => number;
   /** 사용자에게 보여줄 알림 (대시보드 로그) */
   notify: (level: 'info' | 'warn', message: string) => void;
@@ -37,6 +44,11 @@ export class SongService {
   private now: () => number;
   private oembed: (id: string) => Promise<OEmbedResult>;
   private search: (q: string) => Promise<SearchHit[]>;
+  private mix: (id: string) => Promise<SearchHit[]>;
+  private filling: Promise<number> | null = null;
+  private fillAgain = false;
+  private retryTimer: Timer | undefined;
+  private lastFillAt = 0;
   private random: () => number;
   private timer: Timer | null = null;
 
@@ -45,6 +57,7 @@ export class SongService {
     this.now = deps.now ?? Date.now;
     this.oembed = deps.oembed ?? ((id) => checkOEmbed(id));
     this.search = deps.search ?? ((q) => searchYouTube(q));
+    this.mix = deps.mix ?? ((id) => fetchMix(id));
     this.random = deps.random ?? Math.random;
     this.engine = new PlayerEngine(this.host());
 
@@ -59,6 +72,94 @@ export class SongService {
       if (id !== np?.queueId) this.store.setStatus(id, 'queued', this.now());
     }
     this.engine.restore(np, saved.paused, saved.volume);
+    this.ensureAutoStation();
+  }
+
+  /** 🎧 자동 스테이션: 처음부터 있고, 사용자가 다른 걸 고르거나 끄기 전까지 기본으로 켜짐 */
+  private ensureAutoStation() {
+    let auto = this.store.stations().find((s) => s.kind === 'auto');
+    if (!auto) {
+      this.store.createStation(AUTO_NAME, 'auto', 'sequential', null);
+      auto = this.store.stations().find((s) => s.kind === 'auto')!;
+    }
+    if (getSetting<number | null | 'unset'>(this.deps.db, 'songs.activeStation', 'unset') === 'unset') {
+      setSetting(this.deps.db, 'songs.activeStation', auto.id);
+    }
+  }
+
+  private autoStationId(): number | null {
+    return this.store.stations().find((s) => s.kind === 'auto')?.id ?? null;
+  }
+
+  /**
+   * 자동 스테이션 채우기. 최근 재생곡을 기준으로 YouTube 믹스(알고리즘 추천)를 가져오고,
+   * 막혀 있으면 "비슷한 노래" 검색으로 대신합니다. 기록이 없으면 인기곡으로 시작.
+   * @returns 새로 넣은 곡 수
+   */
+  fillAuto(): Promise<number> {
+    if (this.filling) {
+      // 채우는 도중 새 기준곡이 생겼을 수 있음 → 끝나면 한 번 더
+      this.fillAgain = true;
+      return this.filling.then(() => (this.filling ? this.filling : this.fillAuto()));
+    }
+    const id = this.autoStationId();
+    if (!id) return Promise.resolve(0);
+    this.lastFillAt = this.now();
+    this.filling = (async () => {
+      const p = this.policy();
+      const seeds = this.store.recentYoutube(5);
+      const seed = seeds.length ? seeds[Math.floor(this.random() * Math.min(seeds.length, 3))]! : null;
+      let hits = seed ? await this.mix(seed.ref) : [];
+      let source = 'YouTube 믹스';
+      if (!hits.length) {
+        if (seed) {
+          const q = relatedQuery(seed.title, seed.artist);
+          hits = await this.search(q);
+          source = `검색 "${q}"`;
+        } else {
+          // 기록이 없을 때: 인기곡 검색어 두 개를 섞어 시작 (모음 영상은 길이 제한으로 빠지므로 넉넉히)
+          const start = Math.floor(this.random() * DEFAULT_AUTO_QUERIES.length);
+          const qs = [DEFAULT_AUTO_QUERIES[start]!, DEFAULT_AUTO_QUERIES[(start + 1) % DEFAULT_AUTO_QUERIES.length]!];
+          hits = (await Promise.all(qs.map((q) => this.search(q)))).flat();
+          source = `검색 ${qs.map((q) => `"${q}"`).join(', ')}`;
+        }
+      }
+      const max = Math.min(p.maxDurationSec, 480);
+      let added = 0;
+      for (const h of hits) {
+        if (added >= AUTO_BATCH) break;
+        if (!h.durationSec || h.durationSec < 60 || h.durationSec > max || p.blacklistVideos.includes(h.videoId)) continue;
+        const title = `${h.title} ${h.author ?? ''}`.toLowerCase();
+        if (p.blacklistKeywords.some((k) => k && title.includes(k.toLowerCase()))) continue;
+        const known = this.store.findTrack('youtube', h.videoId);
+        if (known?.playable === false || (known && this.store.stationHas(id, known.id))) continue;
+        if (!known) {
+          const o = await this.oembed(h.videoId);
+          if (o.ok === false) continue; // 퍼가기 금지 등
+        }
+        const t = this.store.upsertTrack('youtube', h.videoId, h.title, h.author);
+        if (h.durationSec && !t.durationSec) this.store.setDuration(t.id, h.durationSec);
+        this.store.addStationTrack(id, t.id);
+        added++;
+      }
+      log.info(`auto station +${added} (${source}${seed ? `, 기준곡 "${seed.title}"` : ''})`);
+      if (added) {
+        this.deps.onChange();
+        if (!this.engine.np && this.activeStationId() === id) this.engine.kick(false);
+      }
+      return added;
+    })().finally(() => {
+      this.filling = null;
+      if (this.fillAgain) {
+        this.fillAgain = false;
+        void this.fillAuto();
+      } else if (!this.engine.np && this.activeStationId() === id && this.engine.playerOnline) {
+        // 하나도 못 채웠으면 1분 뒤 다시 시도 (네트워크 일시 장애 등) — 조용히 멈춰 있지 않게
+        clearTimeout(this.retryTimer);
+        this.retryTimer = setTimeout(() => !this.engine.np && this.engine.kick(false), AUTO_REFILL_COOLDOWN_MS + 1000);
+      }
+    });
+    return this.filling;
   }
 
   start() {
@@ -66,6 +167,7 @@ export class SongService {
   }
   stop() {
     if (this.timer) clearInterval(this.timer);
+    clearTimeout(this.retryTimer);
     this.store.savePlayer(this.engine.np, this.engine.paused, this.engine.volume, this.now());
   }
 
@@ -341,7 +443,7 @@ export class SongService {
       }
       const id = this.store.createStation(name, 'local', i.mode ?? 'shuffle', folder);
       const n = this.scanFolder(id);
-      if (!this.activeStationId()) this.activateStation(id);
+      this.activateStation(id); // 새로 만든 스테이션을 바로 켬
       this.deps.onChange();
       return { ok: true as const, id, added: n };
     }
@@ -349,7 +451,7 @@ export class SongService {
     if (!ids.length) return { ok: false as const, error: 'YouTube 링크를 한 줄에 하나씩 넣어 주세요' };
     const id = this.store.createStation(name, 'manual', i.mode ?? 'shuffle', null);
     await this.addLinks(id, ids);
-    if (!this.activeStationId()) this.activateStation(id);
+    this.activateStation(id); // 새로 만든 스테이션을 바로 켬
     this.deps.onChange();
     return { ok: true as const, id, added: ids.length };
   }
@@ -413,6 +515,7 @@ export class SongService {
   }
 
   deleteStation(id: number) {
+    if (id === this.autoStationId()) return; // 자동 스테이션은 끄기만 가능
     this.store.deleteStation(id);
     if (this.activeStationId() === null) setSetting(this.deps.db, 'songs.activeStation', null);
     this.deps.onChange();
@@ -435,6 +538,7 @@ export class SongService {
     const s = this.store.station(stationId);
     if (!s) return null;
     const rows = this.store.stationCandidates(stationId, localOnly);
+    if (s.kind === 'auto' && !localOnly) return this.pickAuto(s, rows);
     if (!rows.length) return null;
     if (s.mode === 'sequential') {
       const next = rows.find((r) => r.ord > s.cursor) ?? rows[0]!;
@@ -449,6 +553,20 @@ export class SongService {
     const pool = rows.filter((r) => !recent.has(r.id));
     const pick = (pool.length ? pool : rows)[Math.floor(this.random() * (pool.length || rows.length))]!;
     return toTrack(pick);
+  }
+
+  /** 자동 스테이션: 새로 들어온 추천곡부터 차례로. 남은 곡이 적으면 미리 더 채움 (라디오처럼 기준곡이 계속 바뀜) */
+  private pickAuto(s: { id: number; cursor: number }, rows: ReturnType<SongStore['stationCandidates']>): Track | null {
+    const recentMs = this.policy().recentBlockMinutes * 60_000 || 3_600_000;
+    const fresh = rows.filter((r) => r.ord > s.cursor && !(r.last_played_at && this.now() - r.last_played_at < recentMs));
+    if (fresh.length < AUTO_REFILL_AT && this.now() - this.lastFillAt > AUTO_REFILL_COOLDOWN_MS) void this.fillAuto();
+    const next = fresh[0] ?? rows.filter((r) => !(r.last_played_at && this.now() - r.last_played_at < recentMs))[0];
+    if (!next) {
+      void this.fillAuto();
+      return null; // 채워지면 fillAuto가 다시 재생을 시작함
+    }
+    if (next.ord > s.cursor) this.store.setCursor(s.id, next.ord);
+    return toTrack(next);
   }
 
   private host(): EngineHost {

@@ -160,6 +160,15 @@ export class SongStore {
       | { id: number; name: string; kind: Station['kind']; mode: Station['mode']; folder: string | null; cursor: number }
       | null;
   }
+  /** 최근에 재생된 YouTube 곡 (자동 스테이션의 기준곡) */
+  recentYoutube(limit: number): Track[] {
+    return (this.db.query(
+      "SELECT * FROM tracks WHERE source = 'youtube' AND last_played_at IS NOT NULL AND (playable IS NULL OR playable = 1) ORDER BY last_played_at DESC LIMIT ?",
+    ).all(limit) as TrackRow[]).map(toTrack);
+  }
+  stationHas(stationId: number, trackId: number): boolean {
+    return !!this.db.query('SELECT 1 FROM station_tracks WHERE station_id = ? AND track_id = ?').get(stationId, trackId);
+  }
   createStation(name: string, kind: Station['kind'], mode: Station['mode'], folder: string | null): number {
     return (this.db.query('INSERT INTO stations(name, kind, mode, folder) VALUES(?, ?, ?, ?) RETURNING id')
       .get(name, kind, mode, folder) as { id: number }).id;

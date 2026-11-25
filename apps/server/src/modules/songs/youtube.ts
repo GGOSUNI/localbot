@@ -107,3 +107,61 @@ export function parseSearchHtml(html: string): SearchHit[] {
   walk(data, 0);
   return hits;
 }
+
+/**
+ * YouTube "믹스"(영상 하나를 기준으로 YouTube 알고리즘이 이어 붙이는 자동 재생목록).
+ * API 키 없이 웹 플레이어가 쓰는 내부 요청을 그대로 씁니다. 막히거나 형식이 바뀌면 빈 배열.
+ */
+export async function fetchMix(videoId: string, fetchImpl: typeof fetch = fetch): Promise<SearchHit[]> {
+  try {
+    const r = await fetchImpl('https://www.youtube.com/youtubei/v1/next?prettyPrint=false', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36',
+      },
+      body: JSON.stringify({
+        context: { client: { clientName: 'WEB', clientVersion: '2.20251101.00.00', hl: 'ko', gl: 'KR' } },
+        videoId,
+        playlistId: `RD${videoId}`,
+      }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return [];
+    return parseMix(await r.json(), videoId);
+  } catch {
+    return [];
+  }
+}
+
+export function parseMix(data: unknown, seedId: string): SearchHit[] {
+  const hits: SearchHit[] = [];
+  const seen = new Set([seedId]);
+  const walk = (o: any, depth: number) => {
+    if (!o || typeof o !== 'object' || depth > 60 || hits.length >= 50) return;
+    const v = o.playlistPanelVideoRenderer;
+    if (v?.videoId) {
+      if (!seen.has(v.videoId)) {
+        seen.add(v.videoId);
+        hits.push({
+          videoId: v.videoId,
+          title: v.title?.simpleText ?? v.title?.runs?.map((x: any) => x.text).join('') ?? v.videoId,
+          author: v.shortBylineText?.runs?.[0]?.text ?? v.longBylineText?.runs?.[0]?.text ?? null,
+          durationSec: parseDuration(v.lengthText?.simpleText),
+        });
+      }
+      return;
+    }
+    for (const k in o) walk(o[k], depth + 1);
+  };
+  walk(data, 0);
+  return hits;
+}
+
+/** 곡 하나에서 "비슷한 노래" 검색어 만들기 (믹스가 막혔을 때 대체용) */
+export function relatedQuery(title: string, author: string | null): string {
+  const a = (author ?? '').replace(/\s*-\s*Topic$/i, '').replace(/(official|공식|channel|vevo|music|records|entertainment)/gi, '').trim();
+  if (a.length >= 2) return `${a} 노래`;
+  const t = title.replace(/[\[\(【].*?[\]\)】]/g, ' ').replace(/(official|m\/v|mv|music video|lyrics|가사)/gi, ' ').replace(/\s+/g, ' ').trim();
+  return t.slice(0, 40) || '인기 가요';
+}

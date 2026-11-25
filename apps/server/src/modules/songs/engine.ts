@@ -300,7 +300,9 @@ export class PlayerEngine {
   private fail(reason: string, code?: number | string, severe = false) {
     const np = this.np;
     if (!np) return;
-    if (np.track.source === 'youtube') {
+    // 영상 하나의 문제(삭제·퍼가기 금지)는 YouTube 장애로 세지 않음
+    const videoSpecific = typeof code === 'number' && PERMANENT_YT_ERRORS.has(code);
+    if (np.track.source === 'youtube' && !videoSpecific) {
       this.ytFails += severe ? WATCHDOG.ytFailsForFallback : 1;
       if (this.ytFails >= WATCHDOG.ytFailsForFallback && this.fallbackUntil === null) {
         this.fallbackUntil = this.host.now() + WATCHDOG.fallbackMs;
