@@ -15,7 +15,10 @@ export interface ConnectionState {
 
 /** 치지직 공식 연결 (봇 채팅 답장) */
 export interface OfficialStatus {
+  /** 로그인 버튼을 누를 수 있는 상태 (간편 로그인 서버가 있거나 직접 등록한 앱 정보가 있음) */
   configured: boolean;
+  /** 키 입력 없이 로그인 버튼 하나로 (중계 서버) */
+  easyLogin: boolean;
   loggedIn: boolean;
   clientId: string | null;
   channelId: string | null;

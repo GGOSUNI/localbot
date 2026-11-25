@@ -195,6 +195,21 @@ function Official({ o }: { o: OfficialStatus }) {
     );
   }
 
+  // 간편 로그인: 버튼 하나
+  if (o.easyLogin && !o.clientId) {
+    return (
+      <section>
+        <div className="row">
+          <span>🤖 <b>봇 답장 켜기</b> <span className="muted small">— 봇이 치지직 채팅방에 직접 답하게 합니다</span></span>
+          <span className="spacer" />
+          <a href="/api/official/login"><button className="primary">치지직으로 로그인</button></a>
+        </div>
+        <div className="muted small" style={{ marginTop: 6 }}>치지직 동의 화면에서 "동의"를 누르면 자동으로 돌아옵니다. 키 입력은 필요 없어요.</div>
+        {o.error && <div className="err">{o.error}</div>}
+      </section>
+    );
+  }
+
   return (
     <section>
       <h2 style={{ cursor: 'pointer', marginBottom: open ? 12 : 0 }} onClick={() => setOpen(!open)}>

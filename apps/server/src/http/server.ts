@@ -216,6 +216,27 @@ export function startHttp(deps: Deps): HttpHandle {
         );
       }
 
+      // 간편 로그인: 중계 서버가 토큰을 주소 # 뒤에 실어 보냄 → 이 페이지가 읽어서 LocalBot에 전달
+      if (url.pathname === '/oauth/relay' && req.method === 'GET') {
+        return new Response(
+          `<!doctype html><meta charset="utf-8"><title>LocalBot</title><body style="font-family:system-ui;background:#0f1115;color:#e7e9ee;display:grid;place-items:center;height:100vh;margin:0"><h2 id="m">로그인 처리 중…</h2><script>
+const p=Object.fromEntries(new URLSearchParams(location.hash.slice(1)));history.replaceState(null,'',location.pathname);
+fetch('/oauth/relay/complete',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(p)}).then(r=>r.json()).then(r=>{
+document.getElementById('m').textContent=r.ok?'✅ '+r.channelName+' 채널로 로그인했습니다. 이제 봇이 채팅방에 답장합니다.':'⚠️ '+r.error;
+setTimeout(()=>location.href='http://127.0.0.1:${deps.port}/#home',r.ok?1500:6000);});
+</script>`,
+          { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' } },
+        );
+      }
+      // JSON 본문이라 다른 사이트에서는 사전 확인(preflight)에 막힘 + 1회용 nonce 확인
+      if (url.pathname === '/oauth/relay/complete' && req.method === 'POST') {
+        if (!(req.headers.get('content-type') ?? '').includes('application/json')) return json({ ok: false, error: 'bad request' }, 400);
+        const body = (await req.json().catch(() => ({}))) as Record<string, string>;
+        const r = await deps.official.handleRelay(body);
+        if (r.ok) await deps.onOfficialLogin(r.channelId).catch(() => {});
+        return json(r, r.ok ? 200 : 400);
+      }
+
       // 대시보드 로그인: ?key= → 세션 쿠키 → /
       if (url.pathname === '/login') {
         const key = url.searchParams.get('key') ?? '';
@@ -239,7 +260,7 @@ export function startHttp(deps: Deps): HttpHandle {
 
       if (url.pathname === '/api/official/login' && req.method === 'GET') {
         const to = deps.official.loginUrl();
-        return to ? Response.redirect(to, 302) : json({ error: '먼저 Client ID와 Secret을 저장해 주세요' }, 400);
+        return to ? Response.redirect(to, 302) : json({ error: '로그인 설정이 없습니다' }, 400);
       }
 
       if (url.pathname === '/ws') {

@@ -22,8 +22,10 @@ const MAX_MESSAGE = 100; // 문서: 메시지 최대 100자
 const SEND_GAP_MS = 1100; // 도배 방지
 
 interface Saved {
-  clientId: string;
-  clientSecret: string;
+  /** relay: 중계 서버로 로그인(키 입력 없음) · own: 스트리머가 직접 등록한 앱 */
+  mode?: 'relay' | 'own';
+  clientId?: string;
+  clientSecret?: string;
   accessToken?: string;
   refreshToken?: string;
   expiresAt?: number;
@@ -43,7 +45,17 @@ export class ChzzkOfficial {
     private onChange: () => void,
     private fetchImpl: typeof fetch = fetch,
     private now: () => number = Date.now,
-  ) {}
+    /** 로그인 중계 서버 주소 (없으면 직접 등록한 앱으로만 로그인 가능) */
+    private relayUrl: string | null = null,
+  ) {
+    this.relayUrl = relayUrl ? relayUrl.replace(/\/+$/, '') : null;
+  }
+
+  private get useRelay(): boolean {
+    const s = this.saved();
+    // 직접 등록한 앱 정보가 있으면 그걸 우선, 없으면 중계 서버
+    return !!this.relayUrl && !(s?.clientId && s.clientSecret);
+  }
 
   get redirectUri() {
     return `http://localhost:${this.port}${REDIRECT_PATH}`;
@@ -61,7 +73,8 @@ export class ChzzkOfficial {
   status(): OfficialStatus {
     const s = this.saved();
     return {
-      configured: !!(s?.clientId && s.clientSecret),
+      configured: !!(s?.clientId && s.clientSecret) || !!this.relayUrl,
+      easyLogin: !!this.relayUrl,
       loggedIn: !!s?.refreshToken,
       clientId: s?.clientId ?? null,
       channelId: s?.channelId ?? null,
@@ -81,7 +94,7 @@ export class ChzzkOfficial {
     if (!id || !secret) return { ok: false, error: 'Client ID와 Client Secret을 모두 넣어 주세요' };
     const prev = this.saved();
     // 앱을 바꾸면 기존 로그인은 무효
-    this.save(prev && prev.clientId === id ? { ...prev, clientSecret: secret } : { clientId: id, clientSecret: secret });
+    this.save(prev && prev.clientId === id ? { ...prev, mode: 'own', clientSecret: secret } : { mode: 'own', clientId: id, clientSecret: secret });
     this.lastError = null;
     return { ok: true };
   }
@@ -89,14 +102,42 @@ export class ChzzkOfficial {
   /** 로그인 페이지 주소. state는 10분 안에 한 번만 쓸 수 있음 */
   loginUrl(): string | null {
     const s = this.saved();
-    if (!s?.clientId) return null;
     const state = Buffer.from(crypto.getRandomValues(new Uint8Array(12))).toString('base64url');
+    if (this.useRelay) {
+      this.states.set(state, this.now());
+      return `${this.relayUrl}/login?port=${this.port}&nonce=${state}`;
+    }
+    if (!s?.clientId) return null;
     this.states.set(state, this.now());
     const u = new URL(AUTH_PAGE);
     u.searchParams.set('clientId', s.clientId);
     u.searchParams.set('redirectUri', this.redirectUri);
     u.searchParams.set('state', state);
     return u.toString();
+  }
+
+  /** 중계 서버가 돌려준 토큰 받기 (/oauth/relay 페이지가 주소의 # 뒷부분을 그대로 넘김) */
+  async handleRelay(p: { nonce?: string; access?: string; refresh?: string; expiresIn?: string }): Promise<{ ok: true; channelName: string; channelId: string } | { ok: false; error: string }> {
+    const created = p.nonce ? this.states.get(p.nonce) : undefined;
+    if (!p.nonce || created === undefined || this.now() - created > 10 * 60_000) {
+      return { ok: false, error: '로그인 요청이 만료됐습니다. 대시보드에서 다시 눌러 주세요.' };
+    }
+    this.states.delete(p.nonce);
+    if (!p.access || !p.refresh) return { ok: false, error: '로그인 정보가 비어 있습니다' };
+    this.save({
+      mode: 'relay', accessToken: p.access, refreshToken: p.refresh,
+      expiresAt: this.now() + (Number(p.expiresIn) || 86400) * 1000,
+    });
+    return this.finishLogin();
+  }
+
+  private async finishLogin(): Promise<{ ok: true; channelName: string; channelId: string } | { ok: false; error: string }> {
+    const me = await this.api<{ channelId: string; channelName: string }>('GET', '/open/v1/users/me');
+    if (!me.ok) return { ok: false, error: `로그인은 됐지만 채널 정보를 못 가져왔습니다 (${me.error}). 앱 권한에 "유저 정보 조회"가 있는지 확인해 주세요.` };
+    this.save({ ...this.saved()!, channelId: me.data.channelId, channelName: me.data.channelName });
+    this.lastError = null;
+    log.info(`logged in as ${me.data.channelName} (${this.saved()?.mode ?? 'own'})`);
+    return { ok: true, channelName: me.data.channelName, channelId: me.data.channelId };
   }
 
   /** /oauth/chzzk 콜백 처리 */
@@ -109,30 +150,27 @@ export class ChzzkOfficial {
     const s = this.saved();
     if (!s || !code) return { ok: false, error: '로그인 정보가 없습니다' };
 
+    if (!s.clientId || !s.clientSecret) return { ok: false, error: '앱 정보가 없습니다' };
     const tok = await this.tokenRequest({ grantType: 'authorization_code', clientId: s.clientId, clientSecret: s.clientSecret, code, state });
     if (!tok.ok) return tok;
-    const next: Saved = { ...s, ...tok.tokens };
-    this.save(next);
-
-    const me = await this.api<{ channelId: string; channelName: string }>('GET', '/open/v1/users/me');
-    if (!me.ok) return { ok: false, error: `로그인은 됐지만 채널 정보를 못 가져왔습니다 (${me.error}). 앱 권한에 "유저 정보 조회"가 있는지 확인해 주세요.` };
-    this.save({ ...this.saved()!, channelId: me.data.channelId, channelName: me.data.channelName });
-    this.lastError = null;
-    log.info(`logged in as ${me.data.channelName}`);
-    return { ok: true, channelName: me.data.channelName, channelId: me.data.channelId };
+    this.save({ ...s, mode: 'own', ...tok.tokens });
+    return this.finishLogin();
   }
 
   async logout() {
     const s = this.saved();
     if (s?.refreshToken) {
-      await this.fetchImpl(`${OPENAPI}/auth/v1/token/revoke`, {
+      const relay = s.mode === 'relay' && this.relayUrl;
+      await this.fetchImpl(relay ? `${this.relayUrl}/revoke` : `${OPENAPI}/auth/v1/token/revoke`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ clientId: s.clientId, clientSecret: s.clientSecret, token: s.refreshToken, tokenTypeHint: 'refresh_token' }),
+        body: JSON.stringify(relay
+          ? { token: s.refreshToken }
+          : { clientId: s.clientId, clientSecret: s.clientSecret, token: s.refreshToken, tokenTypeHint: 'refresh_token' }),
         signal: AbortSignal.timeout(8000),
       }).catch(() => null);
     }
-    if (s) this.save({ clientId: s.clientId, clientSecret: s.clientSecret });
+    this.save(s?.clientId && s.clientSecret ? { mode: 'own', clientId: s.clientId, clientSecret: s.clientSecret } : null);
   }
 
   /** 앱 정보까지 지우기 */
@@ -192,15 +230,36 @@ export class ChzzkOfficial {
     }
   }
 
+  private async relayRefresh(refreshToken: string): Promise<{ ok: true; tokens: Pick<Saved, 'accessToken' | 'refreshToken' | 'expiresAt'> } | { ok: false; error: string }> {
+    if (!this.relayUrl) return { ok: false, error: '중계 서버 없음' };
+    try {
+      const r = await this.fetchImpl(`${this.relayUrl}/refresh`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const j = (await r.json().catch(() => ({}))) as { accessToken?: string; refreshToken?: string; expiresIn?: string; error?: string };
+      if (!r.ok || !j.accessToken) return { ok: false, error: explain(j.error ?? `HTTP ${r.status}`) };
+      return { ok: true, tokens: { accessToken: j.accessToken, refreshToken: j.refreshToken, expiresAt: this.now() + (Number(j.expiresIn) || 86400) * 1000 } };
+    } catch {
+      return { ok: false, error: '로그인 서버에 연결할 수 없습니다' };
+    }
+  }
+
   /** 만료 5분 전이면 미리 갱신. 리프레시 토큰은 1회용이라 새로 받은 것을 바로 저장 */
   private async freshToken(force = false): Promise<string | null> {
     const s = this.saved();
     if (!s?.refreshToken) return null;
     if (!force && s.accessToken && (s.expiresAt ?? 0) - this.now() > 5 * 60_000) return s.accessToken;
-    const tok = await this.tokenRequest({ grantType: 'refresh_token', refreshToken: s.refreshToken, clientId: s.clientId, clientSecret: s.clientSecret });
+    const tok = s.mode === 'relay'
+      ? await this.relayRefresh(s.refreshToken)
+      : await this.tokenRequest({ grantType: 'refresh_token', refreshToken: s.refreshToken, clientId: s.clientId ?? '', clientSecret: s.clientSecret ?? '' });
     if (!tok.ok) {
       this.lastError = `로그인이 만료됐습니다. 다시 로그인해 주세요 (${tok.error})`;
-      if (/INVALID_TOKEN|만료/.test(tok.error)) this.save({ clientId: s.clientId, clientSecret: s.clientSecret });
+      if (/INVALID_TOKEN|만료/.test(tok.error)) {
+        this.save(s.clientId && s.clientSecret ? { mode: 'own', clientId: s.clientId, clientSecret: s.clientSecret } : null);
+      }
       this.onChange();
       return null;
     }

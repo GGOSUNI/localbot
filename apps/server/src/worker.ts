@@ -53,7 +53,7 @@ export async function runWorker(): Promise<void> {
   await mock.start((env) => ingest.push(env));
   const connection = new ChzzkConnection(db, ingest, (s) => http?.broadcastConnection(s));
 
-  const official = new ChzzkOfficial(db, config.port, () => http?.broadcastOfficial(official.status()));
+  const official = new ChzzkOfficial(db, config.port, () => http?.broadcastOfficial(official.status()), fetch, Date.now, config.relayUrl || null);
 
   // 봇 응답: 공식 연결로 로그인돼 있으면 치지직 채팅방에, 아니면 대시보드에만 표시
   const reply = (text: string, origin?: Envelope) => {
