@@ -1,4 +1,4 @@
-export const VERSION = '0.3.0';
+export const VERSION = '0.3.1';
 
 export const config = {
   host: process.env.LOCALBOT_HOST ?? '127.0.0.1',

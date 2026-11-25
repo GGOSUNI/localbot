@@ -160,10 +160,21 @@ export class SongStore {
       | { id: number; name: string; kind: Station['kind']; mode: Station['mode']; folder: string | null; cursor: number }
       | null;
   }
-  /** 최근에 재생된 YouTube 곡 (자동 스테이션의 기준곡) */
-  recentYoutube(limit: number): Track[] {
+  /** 최근에 재생된 YouTube 곡 (자동 스테이션의 기준곡). notSkipped면 스킵된 적 있는 곡 제외 */
+  recentYoutube(limit: number, notSkipped = false): Track[] {
     return (this.db.query(
-      "SELECT * FROM tracks WHERE source = 'youtube' AND last_played_at IS NOT NULL AND (playable IS NULL OR playable = 1) ORDER BY last_played_at DESC LIMIT ?",
+      `SELECT * FROM tracks WHERE source = 'youtube' AND last_played_at IS NOT NULL AND (playable IS NULL OR playable = 1)
+       ${notSkipped ? 'AND skip_count = 0' : ''} ORDER BY last_played_at DESC LIMIT ?`,
+    ).all(limit) as TrackRow[]).map(toTrack);
+  }
+  /** 시청자가 신청해서 끝까지 재생된 곡 (최근 순, 중복 곡 제외) */
+  recentPlayedRequests(limit: number): Track[] {
+    return (this.db.query(
+      `SELECT t.* FROM tracks t JOIN (
+         SELECT track_id, MAX(ended_at) AS e FROM queue WHERE status = 'played' GROUP BY track_id
+       ) q ON q.track_id = t.id
+       WHERE t.source = 'youtube' AND (t.playable IS NULL OR t.playable = 1) AND t.skip_count = 0
+       ORDER BY q.e DESC LIMIT ?`,
     ).all(limit) as TrackRow[]).map(toTrack);
   }
   stationHas(stationId: number, trackId: number): boolean {

@@ -16,8 +16,10 @@ const log = createLogger('songs');
 export const AUDIO_EXT = new Set(['.mp3', '.ogg', '.oga', '.opus', '.wav', '.flac', '.m4a', '.aac', '.webm']);
 const POPULAR_NAME = '인기 신청곡';
 const AUTO_NAME = '🎧 자동 (유튜브 추천)';
-const AUTO_BATCH = 10;
-const AUTO_REFILL_AT = 3;
+const AUTO_BATCH = 5;
+const AUTO_REFILL_AT = 2;
+const AUTO_SEEDS = 3;
+const SKIP_ARTIST_MS = 60 * 60_000;
 const AUTO_REFILL_COOLDOWN_MS = 60_000;
 const DEFAULT_AUTO_QUERIES = ['멜론 차트 1위 MV', '요즘 인기 가요 MV', '케이팝 히트곡 Official MV', '감성 발라드 MV', '신나는 노래 MV'];
 
@@ -47,6 +49,10 @@ export class SongService {
   private mix: (id: string) => Promise<SearchHit[]>;
   private filling: Promise<number> | null = null;
   private fillAgain = false;
+  /** 최근 재생곡 가수 (같은 가수 연속 방지) */
+  private recentArtists: string[] = [];
+  /** 스킵된 가수 → 스킵 시각 */
+  private skippedArtists = new Map<string, number>();
   private retryTimer: Timer | undefined;
   private lastFillAt = 0;
   private random: () => number;
@@ -87,6 +93,12 @@ export class SongService {
     }
   }
 
+  private recentlySkippedArtists(): Set<string> {
+    const cutoff = this.now() - SKIP_ARTIST_MS;
+    for (const [a, t] of this.skippedArtists) if (t < cutoff) this.skippedArtists.delete(a);
+    return new Set(this.skippedArtists.keys());
+  }
+
   private autoStationId(): number | null {
     return this.store.stations().find((s) => s.kind === 'auto')?.id ?? null;
   }
@@ -107,30 +119,39 @@ export class SongService {
     this.lastFillAt = this.now();
     this.filling = (async () => {
       const p = this.policy();
-      const seeds = this.store.recentYoutube(5);
-      const seed = seeds.length ? seeds[Math.floor(this.random() * Math.min(seeds.length, 3))]! : null;
-      let hits = seed ? await this.mix(seed.ref) : [];
-      let source = 'YouTube 믹스';
+      // ① 기준곡: 시청자가 신청해서 끝까지 들은 곡이 우선. 없으면 스킵 안 된 최근 재생곡
+      const requested = this.store.recentPlayedRequests(AUTO_SEEDS);
+      const seeds = requested.length ? requested : this.store.recentYoutube(AUTO_SEEDS, true);
+      // ② 여러 기준곡의 믹스를 번갈아 섞어서 한 곡에 쏠리지 않게
+      const mixes = await Promise.all(seeds.map((sd) => this.mix(sd.ref)));
+      let hits = interleave(mixes);
+      let source = `YouTube 믹스 ×${mixes.filter((m) => m.length).length}`;
       if (!hits.length) {
-        if (seed) {
-          const q = relatedQuery(seed.title, seed.artist);
+        if (seeds.length) {
+          const q = relatedQuery(seeds[0]!.title, seeds[0]!.artist);
           hits = await this.search(q);
           source = `검색 "${q}"`;
         } else {
           // 기록이 없을 때: 인기곡 검색어 두 개를 섞어 시작 (모음 영상은 길이 제한으로 빠지므로 넉넉히)
           const start = Math.floor(this.random() * DEFAULT_AUTO_QUERIES.length);
           const qs = [DEFAULT_AUTO_QUERIES[start]!, DEFAULT_AUTO_QUERIES[(start + 1) % DEFAULT_AUTO_QUERIES.length]!];
-          hits = (await Promise.all(qs.map((q) => this.search(q)))).flat();
+          hits = interleave(await Promise.all(qs.map((q) => this.search(q))));
           source = `검색 ${qs.map((q) => `"${q}"`).join(', ')}`;
         }
       }
       const max = Math.min(p.maxDurationSec, 480);
+      const skipped = this.recentlySkippedArtists();
+      const perArtist = new Map<string, number>();
       let added = 0;
       for (const h of hits) {
         if (added >= AUTO_BATCH) break;
         if (!h.durationSec || h.durationSec < 60 || h.durationSec > max || p.blacklistVideos.includes(h.videoId)) continue;
         const title = `${h.title} ${h.author ?? ''}`.toLowerCase();
         if (p.blacklistKeywords.some((k) => k && title.includes(k.toLowerCase()))) continue;
+        // ③ 최근에 스킵한 가수는 한동안 빼기, ④ 한 번에 같은 가수 2곡까지
+        const artist = artistKey(h.author, h.title);
+        if (artist && skipped.has(artist)) continue;
+        if (artist && (perArtist.get(artist) ?? 0) >= 2) continue;
         const known = this.store.findTrack('youtube', h.videoId);
         if (known?.playable === false || (known && this.store.stationHas(id, known.id))) continue;
         if (!known) {
@@ -140,9 +161,10 @@ export class SongService {
         const t = this.store.upsertTrack('youtube', h.videoId, h.title, h.author);
         if (h.durationSec && !t.durationSec) this.store.setDuration(t.id, h.durationSec);
         this.store.addStationTrack(id, t.id);
+        if (artist) perArtist.set(artist, (perArtist.get(artist) ?? 0) + 1);
         added++;
       }
-      log.info(`auto station +${added} (${source}${seed ? `, 기준곡 "${seed.title}"` : ''})`);
+      log.info(`auto station +${added} (${source}${seeds.length ? `, 기준곡 ${seeds.map((x) => `"${x.title}"`).join(', ')}` : ''})`);
       if (added) {
         this.deps.onChange();
         if (!this.engine.np && this.activeStationId() === id) this.engine.kick(false);
@@ -560,7 +582,14 @@ export class SongService {
     const recentMs = this.policy().recentBlockMinutes * 60_000 || 3_600_000;
     const fresh = rows.filter((r) => r.ord > s.cursor && !(r.last_played_at && this.now() - r.last_played_at < recentMs));
     if (fresh.length < AUTO_REFILL_AT && this.now() - this.lastFillAt > AUTO_REFILL_COOLDOWN_MS) void this.fillAuto();
-    const next = fresh[0] ?? rows.filter((r) => !(r.last_played_at && this.now() - r.last_played_at < recentMs))[0];
+    // 직전 두 곡과 같은 가수면 그다음 곡을 먼저 (같은 가수 3연속 방지)
+    const lastTwo = this.recentArtists.slice(-2);
+    const sameAsRecent = (r: { artist: string | null; title: string }) => {
+      const a = artistKey(r.artist, r.title);
+      return !!a && lastTwo.length === 2 && lastTwo.every((x) => x === a);
+    };
+    const pool = fresh.length ? fresh : rows.filter((r) => !(r.last_played_at && this.now() - r.last_played_at < recentMs));
+    const next = pool.find((r) => !sameAsRecent(r)) ?? pool[0];
     if (!next) {
       void this.fillAuto();
       return null; // 채워지면 fillAuto가 다시 재생을 시작함
@@ -605,6 +634,8 @@ export class SongService {
       },
 
       onStarted: (np) => {
+        const a = artistKey(np.track.artist, np.track.title);
+        if (a) this.recentArtists = [...this.recentArtists.slice(-4), a];
         if (np.queueId) this.store.setStatus(np.queueId, 'playing', this.now());
         this.store.trackStarted(np.track.id, this.now());
       },
@@ -615,7 +646,12 @@ export class SongService {
           const st = outcome === 'played' ? 'played' : outcome === 'failed' ? 'failed' : 'skipped';
           this.store.setStatus(np.queueId, st, t, reason);
         }
-        if (outcome === 'skipped') this.store.trackSkipped(np.track.id);
+        if (outcome === 'skipped') {
+          this.store.trackSkipped(np.track.id);
+          // 스테이션 곡을 스킵했다면 그 가수는 한동안 추천에서 빼기
+          const a = artistKey(np.track.artist, np.track.title);
+          if (np.kind === 'station' && a) this.skippedArtists.set(a, this.now());
+        }
         if (outcome === 'failed') {
           const permanent = typeof code === 'number' && PERMANENT_YT_ERRORS.has(code);
           this.store.trackFailed(np.track.id, permanent);
@@ -689,4 +725,32 @@ function sanitizePolicy(p: Partial<SongPolicy>): Partial<SongPolicy> {
   if (Array.isArray(p.blacklistVideos)) out.blacklistVideos = p.blacklistVideos.map((v) => findYouTubeId(String(v)) ?? String(v).trim()).filter(Boolean);
   if (Array.isArray(p.blacklistKeywords)) out.blacklistKeywords = p.blacklistKeywords.map((v) => String(v).trim()).filter(Boolean);
   return out;
+}
+
+/** 여러 목록을 번갈아 섞기 [a1,b1,c1,a2,b2,...] (중복 제거) */
+function interleave(lists: SearchHit[][]): SearchHit[] {
+  const out: SearchHit[] = [];
+  const seen = new Set<string>();
+  const n = Math.max(0, ...lists.map((l) => l.length));
+  for (let i = 0; i < n; i++) {
+    for (const l of lists) {
+      const h = l[i];
+      if (h && !seen.has(h.videoId)) {
+        seen.add(h.videoId);
+        out.push(h);
+      }
+    }
+  }
+  return out;
+}
+
+/** 가수 비교용 키: 채널명(“- Topic”, “Official” 등 제거) 또는 제목의 “가수 - 곡” 앞부분 */
+export function artistKey(author: string | null | undefined, title: string): string | null {
+  const clean = (x: string) =>
+    x.toLowerCase().replace(/\s*-\s*topic$/, '').replace(/official|vevo|channel|music|공식|채널|\s+/g, '').trim();
+  const fromTitle = title.replace(/^[\[(【].*?[\])】]\s*/, '').split(/\s+[-–—]\s+/)[0] ?? '';
+  const a = author ? clean(author) : '';
+  if (a.length >= 2) return a;
+  const t = fromTitle && fromTitle !== title ? clean(fromTitle) : '';
+  return t.length >= 2 ? t : null;
 }

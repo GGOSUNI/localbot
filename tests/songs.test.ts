@@ -604,3 +604,103 @@ test('YouTube 믹스 응답 파싱 / 비슷한 노래 검색어', async () => {
   expect(relatedQuery('BIBI - 나쁜년 (Official M/V)', 'BIBI - Topic')).toBe('BIBI 노래');
   expect(relatedQuery('[MV] 아이유 - 밤편지', null)).toBe('아이유 - 밤편지');
 });
+
+describe('🎧 자동 스테이션 — 추천 규칙', () => {
+  const H = (n: number, author = `가수${n}`, dur = 200) => ({ videoId: V(n), title: `${author} - 곡${n}`, author, durationSec: dur });
+
+  function setupRules(mixFor: Record<string, any[]>) {
+    const dir = mkdtempSync(join(tmpdir(), 'lb-rules-'));
+    dirs.push(dir);
+    const db = openDatabase(join(dir, 'bot.db'), join(dir, 'backups'));
+    const calls: string[] = [];
+    const clock = { t: 1_800_000_000_000 };
+    const svc = new SongService({
+      db, now: () => clock.t, random: () => 0, notify: () => {}, reply: () => {}, onChange: () => {},
+      oembed: async (id) => ({ ok: true, title: `곡 ${id}`, author: null }),
+      mix: async (id) => (calls.push(id), mixFor[id] ?? []),
+      search: async () => [],
+    });
+    return { svc, calls, clock };
+  }
+  const autoTracks = (svc: SongService) =>
+    svc.store.stationCandidates(svc.store.stations().find((s) => s.kind === 'auto')!.id, false).map((r) => r.ref);
+
+  test('미리 넣는 곡은 5개', async () => {
+    const { svc } = setupRules({ [V(1)]: Array.from({ length: 20 }, (_, i) => H(100 + i)) });
+    const p = player(svc);
+    await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
+    p.hb(1);
+    p.ended();
+    await svc.fillAuto();
+    expect(autoTracks(svc)).toHaveLength(5);
+  });
+
+  test('기준곡은 신청곡 우선 (스테이션이 튼 곡은 안 씀), 최근 신청곡 3개의 믹스를 번갈아 섞음', async () => {
+    const { svc, calls } = setupRules({
+      [V(1)]: [H(11), H(12)], [V(2)]: [H(21), H(22)], [V(3)]: [H(31), H(32)],
+    });
+    const p = player(svc);
+    for (const n of [1, 2, 3]) await svc.request({ videoId: V(n), viewer: viewer(`v${n}`), via: 'chat' });
+    for (let i = 0; i < 3; i++) {
+      p.hb(1);
+      p.ended();
+    }
+    (svc as any).lastFillAt = 0;
+    await svc.fillAuto();
+    // 마지막 채우기는 신청곡 3개 모두를 기준으로 (스테이션 곡은 기준이 아님)
+    expect(new Set(calls.slice(-3))).toEqual(new Set([V(1), V(2), V(3)]));
+    const tracks = autoTracks(svc);
+    for (const n of [21, 31]) expect(tracks).toContain(V(n)); // 여러 믹스가 섞여 들어옴
+  });
+
+  test('스킵한 신청곡은 기준곡에서 빠지고, 스킵한 스테이션 곡의 가수는 한동안 안 나옴', async () => {
+    const { svc, calls } = setupRules({
+      [V(1)]: [H(11, '싫은가수'), H(12, '싫은가수'), H(13), H(14), H(15), H(16), H(17)],
+      [V(2)]: [],
+    });
+    const p = player(svc);
+    await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
+    await svc.request({ videoId: V(2), viewer: viewer('b'), via: 'chat' });
+    p.hb(1);
+    p.ended(); // V1 끝까지
+    p.hb(1);
+    svc.skip(); // V2 스킵
+    await svc.fillAuto();
+    expect(calls).not.toContain(V(2));
+    // 자동 스테이션의 첫 곡(싫은가수)을 스킵 → 그 가수는 다음 채우기에서 제외
+    expect(svc.engine.np?.track.ref).toBe(V(11));
+    svc.skip();
+    const before = autoTracks(svc).length;
+    (svc as any).lastFillAt = 0;
+    await svc.fillAuto();
+    const added = autoTracks(svc).slice(before);
+    expect(added).not.toContain(V(12));
+  });
+
+  test('같은 가수 3연속 방지', async () => {
+    const { svc } = setupRules({ [V(1)]: [H(11, '같은가수'), H(12, '같은가수'), H(13, '다른가수')] });
+    await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
+    // 신청곡 자체도 '같은가수'로 만들어 두고 재생 시작
+    svc.store.db.query('UPDATE tracks SET artist = ? WHERE ref = ?').run('같은가수', V(1));
+    const p = player(svc);
+    p.hb(1);
+    p.ended();
+    await svc.fillAuto();
+    // 방금 나온 신청곡이 같은가수였어도 1곡이므로 같은가수 곡 하나는 OK
+    const seen = [svc.engine.np!.track.ref];
+    p.hb(1);
+    p.ended();
+    seen.push(svc.engine.np!.track.ref);
+    // 같은가수가 이미 2연속(신청곡 + V11) → 다음은 다른가수가 먼저
+    expect(seen).toEqual([V(11), V(13)]);
+  });
+});
+
+test('가수 이름 정리', async () => {
+  const { artistKey } = await import('../apps/server/src/modules/songs/service.ts');
+  expect(artistKey('IVE - Topic', 'I AM')).toBe('ive');
+  expect(artistKey('BIBI Official', 'x')).toBe('bibi');
+  expect(artistKey(null, '아이유 - 밤편지')).toBe('아이유');
+  expect(artistKey(null, '[MV] 화사 - Maria')).toBe('화사');
+  expect(artistKey(null, '그냥 제목')).toBeNull();
+});
