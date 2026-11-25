@@ -30,14 +30,24 @@ beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), 'lb-win-'));
   writeFileSync(join(dir, 'a.wav'), wav(4));
   writeFileSync(join(dir, 'ad.wav'), wav(30)); // 30초짜리 못 건너뛰는 광고
+  writeFileSync(join(dir, 'b.wav'), wav(7));
   server = Bun.serve({
     port: 0, hostname: '127.0.0.1',
     fetch(req) {
       const u = new URL(req.url);
-      if (u.pathname === '/a.wav' || u.pathname === '/ad.wav') return new Response(Bun.file(join(dir, u.pathname.slice(1))), { headers: { 'content-type': 'audio/wav' } });
+      if (u.pathname === '/a.wav' || u.pathname === '/ad.wav' || u.pathname === '/b.wav') return new Response(Bun.file(join(dir, u.pathname.slice(1))), { headers: { 'content-type': 'audio/wav' } });
       if (u.pathname === '/state') {
         pageState = Object.fromEntries(u.searchParams);
         return new Response('ok');
+      }
+      if (u.pathname === '/watch' && u.searchParams.get('v') === 'autoplay123') {
+        // 유튜브처럼: 영상이 끝나면(ended) 바로 다음 추천 영상으로 넘어감
+        return new Response(`<!doctype html><title>fake yt</title>
+          <div id="movie_player" class="html5-video-player"><div class="html5-video-container"><video class="html5-main-video" src="/b.wav" autoplay></video></div></div>
+          <script>
+            const v = document.querySelector('video');
+            v.addEventListener('ended', () => { history.pushState(null, '', '/watch?v=nextvideo11'); v.src = '/a.wav'; v.play(); fetch('/state?autoplayed=1'); });
+          </script>`, { headers: { 'content-type': 'text/html' } });
       }
       if (u.pathname === '/watch' && u.searchParams.get('v') === 'adtest12345') {
         // 유튜브처럼: 광고 중엔 #movie_player에 ad-showing, 광고가 끝나면 같은 video로 본편 재생
@@ -133,6 +143,22 @@ describe.skipIf(!hasChrome)('유튜브 창 플레이어 (실제 크로미움)', 
     for (let i = 0; i < 20 && !frames.length; i++) await Bun.sleep(250);
     expect(frames.length).toBeGreaterThan(0);
     for (const f of frames) expect(jpegSize(f)).toEqual({ w: 640, h: 360 }); // 찌그러진 프레임은 대시보드로 안 보냄
+    await wp.shutdown();
+  }, 30_000);
+
+  test('곡 끝: 유튜브 자동재생으로 넘어가기 전에 멈추고 끝남 보고 (같은 곡 반복 없음)', async () => {
+    pageState = null;
+    const reports: PlayerReport[] = [];
+    const wp = new WindowPlayer({
+      dataDir: join(dir, 'auto'), debugPort: 9337, enabled: () => true, report: (r) => reports.push(r),
+      browserPath: CHROME, watchBase: `http://127.0.0.1:${server.port}/watch`, extraArgs: ['--headless=new', '--no-sandbox', '--mute-audio'],
+    });
+    wp.send({ op: 'play', seq: 3, position: 0, volume: 50, paused: false, track: { id: 5, source: 'youtube', ref: 'autoplay123', title: 'auto' } });
+    for (let i = 0; i < 60 && !reports.some((r) => r.type === 'player.ended'); i++) await Bun.sleep(250);
+    expect(reports.some((r) => r.type === 'player.ended' && r.seq === 3)).toBe(true);
+    await Bun.sleep(1500);
+    expect(pageState).toBeNull(); // 다음 추천 영상으로 안 넘어감
+    expect(reports.filter((r) => r.type === 'player.ended')).toHaveLength(1);
     await wp.shutdown();
   }, 30_000);
 

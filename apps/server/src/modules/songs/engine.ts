@@ -76,6 +76,8 @@ export class PlayerEngine {
   private playSentAt = 0;
   private lastProgressAt: number | null = null;
   private lastTime = 0;
+  /** 이 곡에서 실제로 재생된 가장 늦은 위치 (보고가 0으로 튀어도 처음부터 다시 틀지 않게) */
+  private maxTime = 0;
   private reloads = 0;
   private blocked = false;
   private ytFails = 0;
@@ -202,6 +204,7 @@ export class PlayerEngine {
         if (this.np.track.source === 'youtube') this.ytFails = 0;
       }
       this.lastTime = r.time;
+      if (r.state === 'playing' && r.time > this.maxTime) this.maxTime = r.time;
       this.np.position = r.time;
       if (r.duration && r.duration > 0 && this.np.duration !== r.duration) {
         this.np.duration = r.duration;
@@ -248,14 +251,15 @@ export class PlayerEngine {
         : t - this.lastProgressAt > WATCHDOG.stallMs;
     if (!stalled) return;
 
-    // 끝부분에서 멈췄으면 ended 이벤트를 놓친 것 → 정상 종료로 처리
-    if (np.duration && this.lastTime >= np.duration - 2) return this.finish('played', null);
+    // 끝부분까지 재생됐는데 멈췄으면 ended 이벤트를 놓친 것 → 정상 종료로 처리 (같은 곡 다시 틀지 않음)
+    const reached = Math.max(this.lastTime, this.maxTime);
+    if (np.duration && reached >= np.duration - 8) return this.finish('played', null);
 
     if (this.reloads < WATCHDOG.maxReloads) {
       this.reloads++;
-      log.warn(`stall detected — reloading "${np.track.title}" at ${this.lastTime.toFixed(1)}s`);
-      this.host.notify('warn', `재생이 멈춰서 다시 불러옵니다: ${np.track.title}`);
-      this.sendPlay(this.lastTime, true);
+      // 조용히 다시 불러옴 (채팅·피드에 안 띄움). 위치는 실제로 들은 데까지
+      log.warn(`stall detected — reloading "${np.track.title}" at ${reached.toFixed(1)}s`);
+      this.sendPlay(reached, true);
       return;
     }
     // 다시 불러와도 아예 시작조차 못 했다면 영상 하나의 문제가 아니라 YouTube 자체가 안 되는 것 → 바로 비상 전환
@@ -376,7 +380,10 @@ export class PlayerEngine {
     this.lastProgressAt = null;
     this.lastTime = position;
     this.blocked = false;
-    if (!isReload) this.reloads = 0;
+    if (!isReload) {
+      this.reloads = 0;
+      this.maxTime = position;
+    }
     const cmd: PlayerCommand = {
       op: 'play', seq: this.seq, position, volume: this.outVolume, paused: this.paused,
       track: { id: np.track.id, source: np.track.source, ref: np.track.ref, title: np.track.title },

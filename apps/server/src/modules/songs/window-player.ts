@@ -155,6 +155,19 @@ export const PAGE_SCRIPT = `(() => {
   setInterval(check, 100);
   document.addEventListener('playing', check, true);
   document.addEventListener('loadedmetadata', check, true);
+  // 곡 끝: 유튜브가 '다음 동영상'으로 넘어가기 전에 우리가 먼저 멈추고 끝났다고 표시
+  const vidNow = () => { try { return new URL(location.href).searchParams.get('v'); } catch { return null; } };
+  const isAd = () => { const p = document.querySelector('#movie_player'); return !!p && (p.classList.contains('ad-showing') || p.classList.contains('ad-interrupting')); };
+  const markEnd = (v) => {
+    if (!document.querySelector('#movie_player') || isAd()) return;
+    if (!window.__lbEnded) window.__lbEnded = vidNow();
+    try { v.pause(); } catch {}
+  };
+  document.addEventListener('timeupdate', (e) => {
+    const v = e.target;
+    if (v && v.tagName === 'VIDEO' && isFinite(v.duration) && v.duration > 5 && v.duration - v.currentTime < 0.6) markEnd(v);
+  }, true);
+  document.addEventListener('ended', (e) => { if (e.target && e.target.tagName === 'VIDEO') markEnd(e.target); }, true);
 })();`;
 
 /** JPEG 가로·세로 (base64 앞부분의 SOF 마커만 읽음) */
@@ -171,6 +184,8 @@ export function jpegSize(b64: string): { w: number; h: number } | null {
 
 interface PageState {
   vid: string | null;
+  /** 끝까지 재생돼서 멈춘 영상 (유튜브 자동재생 막기) */
+  endedVid: string | null;
   href: string;
   ready: boolean;
   ad: boolean;
@@ -192,6 +207,11 @@ export class WindowPlayer {
   private poll: Timer | null = null;
   private endedSent = -1;
   private navigatedAt = 0;
+  /** 지금 곡에서 본 가장 늦은 재생 위치·길이 (유튜브가 딴 영상으로 넘어가도 위치를 안 잃게) */
+  private maxT = 0;
+  private dur: number | null = null;
+  private sawMine = false;
+  private recovered = -1;
   private _status: Status;
   private visible = false;
   private lastFrameAt = 0;
@@ -222,6 +242,9 @@ export class WindowPlayer {
         this.volume = cmd.volume;
         this.paused = cmd.paused;
         this.endedSent = -1;
+        this.maxT = cmd.position;
+        this.dur = null;
+        this.sawMine = false;
         void this.play(cmd);
         break;
       case 'pause':
@@ -372,17 +395,35 @@ export class WindowPlayer {
     if (!s || this.current !== cur) return;
     const seq = cur.seq;
     const mine = cur.track.source === 'local' ? s.href.includes(`/media/${cur.track.id}`) : s.vid === cur.track.ref;
-    if (!mine) return this.o.report({ type: 'player.hb', seq, state: 'loading', time: cur.position, duration: null });
+    const ended = () => {
+      if (this.endedSent === seq) return;
+      this.endedSent = seq;
+      this.o.report({ type: 'player.ended', seq });
+    };
+    // 끝까지 재생돼서 우리가 멈춰 둔 곡
+    if (cur.track.source === 'youtube' && s.endedVid === cur.track.ref) return ended();
+    if (!mine) {
+      if (this.sawMine && cur.track.source === 'youtube') {
+        // 유튜브가 다른 영상(자동재생·추천)으로 넘어감: 거의 끝났으면 끝난 걸로, 아니면 원래 곡 그 위치로 되돌림
+        if (this.dur && this.maxT >= this.dur - 15) return ended();
+        if (this.recovered !== seq) {
+          this.recovered = seq;
+          log.warn(`page left "${cur.track.title}" at ${this.maxT.toFixed(0)}s → back`);
+          this.sawMine = false;
+          void this.play({ ...cur, position: this.maxT });
+        }
+      }
+      return this.o.report({ type: 'player.hb', seq, state: 'loading', time: this.maxT, duration: null });
+    }
+    this.sawMine = true;
     if (s.err && Date.now() - this.navigatedAt > 3000) {
       log.warn(`youtube page error: ${s.err}`);
       return this.o.report({ type: 'player.error', seq, code: 'window-error' });
     }
-    if (s.ad) return this.o.report({ type: 'player.hb', seq, state: 'ad', time: cur.position, duration: null });
-    if (s.ended && s.t > 1) {
-      if (this.endedSent === seq) return;
-      this.endedSent = seq;
-      return this.o.report({ type: 'player.ended', seq });
-    }
+    if (s.ad) return this.o.report({ type: 'player.hb', seq, state: 'ad', time: this.maxT, duration: null });
+    if (s.ended && s.t > 1) return ended();
+    if (s.ready && s.t > this.maxT) this.maxT = s.t;
+    if (s.d) this.dur = s.d;
     const state = !s.ready ? 'loading' : s.paused ? (this.paused ? 'paused' : 'buffering') : 'playing';
     this.o.report({ type: 'player.hb', seq, state, time: s.t, duration: s.d });
   }
@@ -401,12 +442,13 @@ export class WindowPlayer {
       const e = document.querySelector('.ytp-error');
       const err = e && e.offsetParent !== null ? (e.innerText || 'error').slice(0, 120) : null;
       const an = document.querySelector('.ytp-autonav-toggle-button[aria-checked="true"]'); if (an) an.click();
+      const endedVid = window.__lbEnded || null;
       if (v) {
         v.volume = ${this.volume / 100};
         if (!ad && ${this.paused} && !v.paused) v.pause();
-        if ((ad || !${this.paused}) && v.paused && !v.ended) v.play().catch(() => {});
+        if ((ad || !${this.paused}) && v.paused && !v.ended && !endedVid) v.play().catch(() => {});
       }
-      return { vid, href: location.href, ready: !!v && v.readyState >= 2, ad, err, t: v ? v.currentTime : 0,
+      return { vid, endedVid, href: location.href, ready: !!v && v.readyState >= 2, ad, err, t: v ? v.currentTime : 0,
                d: v && isFinite(v.duration) ? v.duration : null, paused: v ? v.paused : true, ended: v ? v.ended : false };
     })()`;
     try {

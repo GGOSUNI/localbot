@@ -812,6 +812,49 @@ describe('유튜브 창 하나로만 재생 (기본 모드)', () => {
     expect(svc.state().volume).toBe(80);
   });
 
+  test('곡 끝에서 유튜브가 다른 영상으로 넘어가도 같은 곡을 처음부터 다시 틀지 않고 다음 곡으로', async () => {
+    const { svc, cmds, seq, report } = setupWin();
+    const clock = { t: Date.now() };
+    (svc.engine as any).host.now = () => clock.t;
+    await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
+    await svc.request({ videoId: V(2), viewer: viewer('b'), via: 'chat' });
+    for (let t = 0; t <= 196; t += 4) {
+      clock.t += 4000;
+      report({ type: 'player.hb', seq: seq(), state: 'playing', time: t, duration: 200 });
+    }
+    // 끝나자마자 자동재생으로 딴 영상 → 위치 0, 진행 없음
+    for (let i = 0; i < 12; i++) {
+      clock.t += 1000;
+      report({ type: 'player.hb', seq: seq(), state: 'loading', time: 0, duration: null });
+      svc.engine.tick();
+    }
+    expect(svc.engine.np?.track.ref).toBe(V(2));
+    expect(cmds.filter((c) => c.op === 'play' && c.track.ref === V(1))).toHaveLength(1); // 같은 곡 다시 안 틂
+  });
+
+  test('곡 중간에 멈추면 조용히, 들은 위치부터 다시 (처음부터 아님)', async () => {
+    const { svc, cmds, seq, report } = setupWin();
+    const notes: string[] = [];
+    (svc as any).deps.notify = (_l: string, m: string) => notes.push(m);
+    const clock = { t: Date.now() };
+    (svc.engine as any).host.now = () => clock.t;
+    await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
+    for (let t = 0; t <= 100; t += 4) {
+      clock.t += 4000;
+      report({ type: 'player.hb', seq: seq(), state: 'playing', time: t, duration: 300 });
+    }
+    for (let i = 0; i < 10; i++) {
+      clock.t += 1000;
+      report({ type: 'player.hb', seq: seq(), state: 'loading', time: 0, duration: null });
+      svc.engine.tick();
+    }
+    const plays = cmds.filter((c) => c.op === 'play');
+    expect(plays).toHaveLength(2);
+    expect(plays[1].track.ref).toBe(V(1));
+    expect(plays[1].position).toBe(100);
+    expect(notes.some((n) => n.includes('다시 불러옵니다'))).toBe(false);
+  });
+
   test('광고가 길어도 멈춘 걸로 치지 않음', async () => {
     const { svc, seq, report } = setupWin();
     await svc.request({ videoId: V(1), viewer: viewer('a'), via: 'chat' });
